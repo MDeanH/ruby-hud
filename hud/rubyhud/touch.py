@@ -12,6 +12,8 @@ only the primary contact per device, and synthesizes gestures on contact UP:
   ('hold', x, y)         duration >= 0.45s and total movement < 45 px
   ('swipe_left', x, y)   dx < -130 px and |dx| > 2|dy| (any duration)
   ('swipe_right', x, y)  dx > +130 px and |dx| > 2|dy| (any duration)
+  ('swipe_up', x, y)     dy < -130 px and |dy| > 2|dx| (any duration)
+  ('swipe_down', x, y)   dy > +130 px and |dy| > 2|dx| (any duration)
 
 x/y are screen pixels at the contact-DOWN point, normalized from each
 device's absinfo range to the (w, h) given to the constructor. Devices are
@@ -308,6 +310,9 @@ class TouchInput:
         dy = c.last_px[1] - c.down_px[1]
         if abs(dx) > SWIPE_MIN_PX and abs(dx) > 2.0 * abs(dy):
             kind = "swipe_left" if dx < 0 else "swipe_right"
+            return (kind, int(c.down_px[0]), int(c.down_px[1]))
+        if abs(dy) > SWIPE_MIN_PX and abs(dy) > 2.0 * abs(dx):
+            kind = "swipe_up" if dy < 0 else "swipe_down"
             return (kind, int(c.down_px[0]), int(c.down_px[1]))
         if c.max_move < MOVE_MAX_PX:
             kind = "tap" if dur < TAP_MAX_S else "hold"

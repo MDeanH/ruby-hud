@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch the ruby-update request queue
+
+[Path]
+PathExistsGlob=/run/ruby-update/queue/*.req
+
+[Install]
+WantedBy=multi-user.target

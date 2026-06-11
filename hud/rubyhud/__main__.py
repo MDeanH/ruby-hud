@@ -8,8 +8,10 @@ Modes (via env):
                         snapshot. RUBYHUD_PAGE selects the page (default 0).
   (normal)           -> open the framebuffer, loop at ~15 fps blitting frames.
                         Touch gestures (evdev, optional) page between the
-                        GAUGES / CAN BUS / SYSTEM pages: swipe left/right,
-                        tap the screen edges, or long-press anywhere.
+                        pages (GAUGES / CAN BUS / SYSTEM / SETTINGS / ...):
+                        swipe left/right, tap the screen edges, or long-press
+                        anywhere (pages may consume holds / vertical swipes
+                        first, e.g. SETTINGS uses hold=back, swipe=scroll).
 
 Signals: SIGTERM/SIGINT -> clean shutdown (stop dl, clear+close fb, exit 0).
          SIGUSR1 -> save current frame to /tmp/hud.png.
@@ -111,8 +113,21 @@ def _apply_touch(ui, touch, pages, state) -> None:
         elif kind == "swipe_right":
             ui["page_idx"] = (ui["page_idx"] - 1) % n
         elif kind == "hold":
-            # Fallback gesture: long-press anywhere cycles pages too.
-            ui["page_idx"] = (ui["page_idx"] + 1) % n
+            consumed = False
+            try:
+                consumed = bool(pages[ui["page_idx"]].handle_hold(
+                    ex, ey, ui["ctx"]))
+            except Exception:
+                _log("hold handler error:\n" + traceback.format_exc())
+            if not consumed:
+                # Fallback gesture: long-press anywhere cycles pages too.
+                ui["page_idx"] = (ui["page_idx"] + 1) % n
+        elif kind in ("swipe_up", "swipe_down"):
+            try:
+                pages[ui["page_idx"]].handle_swipe_v(
+                    "up" if kind == "swipe_up" else "down", ui["ctx"])
+            except Exception:
+                _log("swipe handler error:\n" + traceback.format_exc())
         elif kind == "tap":
             if ex < EDGE_PX:
                 ui["page_idx"] = (ui["page_idx"] - 1) % n

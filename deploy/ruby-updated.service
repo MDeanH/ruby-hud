@@ -1,0 +1,7 @@
+[Unit]
+Description=Privileged ruby HUD updater (queue consumer)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ruby-updated --consume
+TimeoutStartSec=15min

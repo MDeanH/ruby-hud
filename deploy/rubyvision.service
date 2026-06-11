@@ -1,0 +1,30 @@
+[Unit]
+Description=Ruby camera -> Hailo inference -> annotated frame service
+After=network.target
+# Never enter the systemd start-rate-limiter: this service may legitimately
+# crash-loop while a camera/HEF is being set up, and Restart=always must keep
+# retrying. StartLimitIntervalSec/StartLimitBurst are [Unit]-section directives
+# (ignored if placed under [Service]).
+StartLimitIntervalSec=0
+
+[Service]
+User=michael
+Group=michael
+# video: V4L2 / camera nodes; render: Hailo /dev/hailo* DRI access.
+SupplementaryGroups=video render
+# rubyvision must be importable by this interpreter. Either:
+#   (a) pip install -e <release>/vision into ruby-env (preferred; setup-vision.sh
+#       does this against the live release, reached via the /home/michael/hud
+#       symlink), OR
+#   (b) fall back to PYTHONPATH below (uncomment) if the editable install is
+#       not present. /home/michael/hud is the symlink to the active release, so
+#       this always points at the live code (not the bootstrap clone).
+#Environment=PYTHONPATH=/home/michael/hud/vision
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/michael/ruby-env/bin/python -m rubyvision --models /home/michael/vision/models --shm /dev/shm/rubyvision --fps 15
+Restart=always
+RestartSec=2
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

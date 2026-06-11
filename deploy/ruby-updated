@@ -1,0 +1,628 @@
+#!/usr/bin/env bash
+# ruby-updated -- privileged update handler for the ruby HUD. Root.
+# Installed to /usr/local/sbin/ruby-updated by deploy/install.sh; refreshed
+# automatically after each successful apply (self-install from the release).
+#
+# Verbs:
+#   --consume          drain /run/ruby-update/queue/*.req and dispatch
+#   check              fetch tags, report current vs highest v* tag
+#   apply [ref]        stage + switch to <ref> (default highest tag), watch,
+#                      revert automatically if the HUD is unhealthy
+#   rollback [ref]     switch back to <ref> (default hud-state/previous);
+#                      zero network required
+#   auto-rollback      OnFailure= hook: revert a pending update, else restart
+#   adopt <tag>        one-time migration: /home/michael/hud dir -> symlink
+#   restart-hud | switch-dash | switch-hud
+#
+# Every phase appends a JSON line to /run/ruby-update/status.jsonl and
+# atomically rewrites /run/ruby-update/status.json. All verbs run under a
+# non-blocking flock; a second instance reports phase "busy" and exits.
+set -u
+
+MICHAEL=michael
+HOME_DIR=/home/michael
+REPO=$HOME_DIR/hud-repo
+RELEASES=$HOME_DIR/hud-releases
+LIVE=$HOME_DIR/hud
+STATE_DIR=$HOME_DIR/hud-state
+ATTEMPTS_FILE=$STATE_DIR/rollback-attempts
+RUN_DIR=/run/ruby-update
+QUEUE=$RUN_DIR/queue
+LOCK=$RUN_DIR/lock
+STATUS_JSON=$RUN_DIR/status.json
+STATUS_LOG=$RUN_DIR/status.jsonl
+SETUP_LOG=$RUN_DIR/setup.log
+SBIN_SELF=/usr/local/sbin/ruby-updated
+GIT_SSH="ssh -o ConnectTimeout=10 -o BatchMode=yes"
+TAG_RE='^v[0-9][0-9.]*$'
+WATCH_SECS=90
+MIN_FREE_KB=512000
+
+CURRENT="" AVAILABLE="" TARGET="" ERROR=""
+
+# --- status plumbing ---------------------------------------------------------
+
+json_escape() {
+    local s=${1//\\/\\\\}
+    s=${s//\"/\\\"}
+    printf '%s' "$s"
+}
+
+set_status() {  # <phase> <msg> <true|false>
+    local phase=$1 msg=$2 ok=$3 ts
+    ts=$(date +%s)
+    printf '{"ts":%s,"phase":"%s","msg":"%s","ok":%s}\n' \
+        "$ts" "$(json_escape "$phase")" "$(json_escape "$msg")" "$ok" \
+        >>"$STATUS_LOG"
+    printf '{"ts":%s,"phase":"%s","current":"%s","available":"%s","target":"%s","ok":%s,"error":"%s"}\n' \
+        "$ts" "$(json_escape "$phase")" "$(json_escape "$CURRENT")" \
+        "$(json_escape "$AVAILABLE")" "$(json_escape "$TARGET")" \
+        "$ok" "$(json_escape "$ERROR")" >"$STATUS_JSON.new"
+    mv -f "$STATUS_JSON.new" "$STATUS_JSON"
+}
+
+fail() {  # <msg>: terminal error status; caller must still `return 1`
+    ERROR=$1
+    set_status error "$1" false
+    return 1
+}
+
+# --- helpers -----------------------------------------------------------------
+
+git_m() {  # git in the repo clone, as michael, pinned batch-mode ssh
+    runuser -u "$MICHAEL" -- env HOME="$HOME_DIR" GIT_SSH_COMMAND="$GIT_SSH" \
+        git -C "$REPO" "$@"
+}
+
+fetch_tags() {
+    # --prune-tags drops local tags that no longer exist on origin, so a
+    # michael-created `git tag vX <malicious-local-commit>` cannot survive a
+    # fetch and be picked up by highest_tag / apply. Tags published by origin
+    # are unaffected.
+    timeout 60 runuser -u "$MICHAEL" -- env HOME="$HOME_DIR" \
+        GIT_SSH_COMMAND="$GIT_SSH" git -C "$REPO" \
+        fetch --tags --prune --prune-tags
+}
+
+require_repo() {
+    [ -e "$REPO/.git" ] && return 0
+    fail "missing git clone at $REPO"
+}
+
+get_current() {  # tag of the live release ("unmanaged" if not a symlink)
+    local link
+    link=$(readlink "$LIVE" 2>/dev/null)
+    if [ -z "$link" ]; then
+        printf 'unmanaged'
+    else
+        basename "$(dirname "$link")"
+    fi
+}
+
+highest_tag() {
+    git_m tag --list 'v*' --sort=-v:refname 2>/dev/null | head -n 1
+}
+
+tag_ok() {
+    printf '%s' "$1" | grep -Eq "$TAG_RE"
+}
+
+tag_exists() {
+    git_m rev-parse -q --verify "refs/tags/$1^{commit}" >/dev/null 2>&1
+}
+
+flip_symlink() {  # <tag>: atomically point $LIVE at <release>/hud
+    ln -sfn "$RELEASES/$1/hud" "$LIVE.new" && mv -T "$LIVE.new" "$LIVE"
+}
+
+boot_id() {  # current boot's unique id (empty if unavailable)
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null
+}
+
+git_at() {  # git in an arbitrary worktree, as michael (ownership-safe)
+    local dir=$1; shift
+    runuser -u "$MICHAEL" -- env HOME="$HOME_DIR" GIT_SSH_COMMAND="$GIT_SSH" \
+        git -C "$dir" "$@"
+}
+
+# verify_release <tag> <dir> [tracked]: 0 iff <dir> is a real (non-symlink)
+# worktree whose HEAD is exactly <tag>'s commit and whose tree is clean. With
+# the optional "tracked" mode only tracked-file changes count as dirty (used
+# after setup.sh, which legitimately drops untracked egg-info/__pycache__).
+# This is the integrity boundary: root must never run code (setup.sh, the
+# self-installed handler) from a tree that does not match the trusted tag.
+verify_release() {
+    local ref=$1 dir=$2 mode=${3:-strict} tsha hsha porc
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    tsha=$(git_m rev-parse -q --verify "refs/tags/$ref^{commit}" 2>/dev/null) \
+        || return 1
+    [ -n "$tsha" ] || return 1
+    hsha=$(git_at "$dir" rev-parse -q --verify HEAD 2>/dev/null) || return 1
+    [ "$hsha" = "$tsha" ] || return 1
+    if [ "$mode" = tracked ]; then
+        porc=$(git_at "$dir" status --porcelain --untracked-files=no 2>/dev/null)
+    else
+        porc=$(git_at "$dir" status --porcelain 2>/dev/null)
+    fi
+    [ -z "$porc" ]
+}
+
+remove_release() {  # <dir>: drop a release worktree; git first, guarded rm
+    local dir=$1
+    case "$dir" in
+        "$RELEASES"/?*) ;;            # must live directly under $RELEASES
+        *) return 1 ;;
+    esac
+    git_m worktree remove --force "$dir" >/dev/null 2>&1
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        rm -rf "$dir"
+    fi
+    git_m worktree prune >/dev/null 2>&1
+    return 0
+}
+
+# stage_release <tag> <dir>: ensure <dir> is a verified clean worktree at <tag>.
+# Reuses an existing dir only when it verifies; otherwise removes whatever is
+# there (a partial/corrupt worktree, or a michael-planted decoy) and re-stages.
+stage_release() {
+    local ref=$1 dir=$2
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        # Reuse only if HEAD is the tag's commit and no *tracked* file was
+        # modified (untracked egg-info/__pycache__ from a prior run are fine --
+        # root executes tracked files only). Otherwise rebuild from scratch.
+        verify_release "$ref" "$dir" tracked && return 0
+        remove_release "$dir"
+    fi
+    git_m worktree add --detach "$dir" "$ref" >/dev/null 2>&1 || return 1
+    verify_release "$ref" "$dir"
+}
+
+watch_hud() {  # poll is-active + NRestarts delta; 0 healthy, 1 unhealthy
+    local base cur state t=0
+    base=$(systemctl show -p NRestarts --value rubyhud 2>/dev/null)
+    base=${base:-0}
+    while [ "$t" -lt "$WATCH_SECS" ]; do
+        sleep 3
+        t=$((t + 3))
+        state=$(systemctl is-active rubyhud 2>/dev/null)
+        cur=$(systemctl show -p NRestarts --value rubyhud 2>/dev/null)
+        cur=${cur:-0}
+        if [ "$state" = "failed" ] || [ $((cur - base)) -ge 3 ]; then
+            return 1
+        fi
+    done
+    [ "$(systemctl is-active rubyhud 2>/dev/null)" = "active" ]
+}
+
+sync_file() {  # <src> <dst> <mode>: 0 if installed/changed, 1 otherwise
+    local src=$1 dst=$2 mode=$3
+    [ -f "$src" ] || return 1
+    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+        return 1
+    fi
+    cp "$src" "$dst.new" && chown root:root "$dst.new" \
+        && chmod "$mode" "$dst.new" && mv -f "$dst.new" "$dst"
+}
+
+self_install() {  # <release-dir>: refresh handler + unit files from release
+    local d=$1/deploy changed=0
+    if sync_file "$d/ruby-updated" "$SBIN_SELF" 0755; then
+        set_status finalizing "installed new $SBIN_SELF" true
+    fi
+    sync_file "$d/ruby-updated.path" /etc/systemd/system/ruby-updated.path 0644 && changed=1
+    sync_file "$d/ruby-updated.service" /etc/systemd/system/ruby-updated.service 0644 && changed=1
+    sync_file "$d/ruby-rollback.service" /etc/systemd/system/ruby-rollback.service 0644 && changed=1
+    sync_file "$d/rubyhud.service" /etc/systemd/system/rubyhud.service 0644 && changed=1
+    sync_file "$d/can0.service" /etc/systemd/system/can0.service 0644 && changed=1
+    sync_file "$d/ruby-capture.service" /etc/systemd/system/ruby-capture.service 0644 && changed=1
+    if sync_file "$d/rubyvision.service" /etc/systemd/system/rubyvision.service 0644; then
+        changed=1
+        # Enable on first install / whenever the unit changes (idempotent).
+        systemctl enable rubyvision >/dev/null 2>&1
+    fi
+    mkdir -p /etc/systemd/system/rubyhud.service.d
+    sync_file "$d/rubyhud-health.conf" \
+        /etc/systemd/system/rubyhud.service.d/10-health.conf 0644 && changed=1
+    if sync_file "$d/tmpfiles-ruby-update.conf" /etc/tmpfiles.d/ruby-update.conf 0644; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/ruby-update.conf 2>/dev/null
+    fi
+    if [ "$changed" -eq 1 ]; then
+        set_status finalizing "unit files changed, daemon-reload" true
+        systemctl daemon-reload
+    fi
+    # rubyvision runs the new release's code via the /home/michael/hud symlink;
+    # restart it (only if already running) so the freshly-deployed code/unit
+    # takes effect. It is independent of the watched rubyhud restart and must
+    # never block or fail the apply.
+    systemctl try-restart rubyvision >/dev/null 2>&1 || true
+    return 0
+}
+
+prune_releases() {  # <current> <previous>: keep those + 1 newest other
+    local cur=$1 prev=$2 d kept=0
+    ls -1 "$RELEASES" 2>/dev/null | grep -E "$TAG_RE" | sort -rV \
+    | while read -r d; do
+        if [ "$d" = "$cur" ] || [ "$d" = "$prev" ]; then
+            continue
+        fi
+        if [ "$kept" -eq 0 ]; then
+            kept=1
+            continue
+        fi
+        set_status finalizing "pruning old release $d" true
+        remove_release "$RELEASES/$d"
+    done
+    git_m worktree prune >/dev/null 2>&1
+    return 0
+}
+
+# --- verbs -------------------------------------------------------------------
+
+do_check() {
+    require_repo || return 1
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status checking "fetching tags from origin" true
+    fetch_tags >/dev/null 2>&1 || { fail "git fetch failed (offline?)"; return 1; }
+    AVAILABLE=$(highest_tag)
+    [ -n "$AVAILABLE" ] || { fail "no v* tags in $REPO"; return 1; }
+    if [ "$AVAILABLE" = "$CURRENT" ]; then
+        set_status done "up to date at $CURRENT" true
+    else
+        set_status done "current $CURRENT, available $AVAILABLE" true
+    fi
+}
+
+do_apply() {
+    local ref=${1:-} prev rel avail_kb sha
+    require_repo || return 1
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status preflight "checking disk space and ref" true
+    avail_kb=$(df --output=avail "$HOME_DIR" 2>/dev/null | tail -n 1 | tr -d ' ')
+    if ! [ "$avail_kb" -ge "$MIN_FREE_KB" ] 2>/dev/null; then
+        fail "need >=500MB free on $HOME_DIR (have ${avail_kb:-?}KB)"; return 1
+    fi
+    if [ -e "$LIVE" ] && [ ! -L "$LIVE" ]; then
+        fail "$LIVE is not a symlink; run 'ruby-updated adopt <tag>' first"; return 1
+    fi
+    if [ -n "$ref" ] && ! tag_ok "$ref"; then
+        fail "bad ref '$ref' (want vX.Y.Z)"; return 1
+    fi
+    set_status fetching "git fetch --tags --prune" true
+    fetch_tags >/dev/null 2>&1 || { fail "git fetch failed (offline?)"; return 1; }
+    [ -n "$ref" ] || ref=$(highest_tag)
+    [ -n "$ref" ] || { fail "no v* tags in $REPO"; return 1; }
+    tag_exists "$ref" || { fail "tag $ref not found after fetch"; return 1; }
+    TARGET=$ref
+    AVAILABLE=$(highest_tag)
+    if [ "$ref" = "$CURRENT" ]; then
+        set_status done "already on $ref" true
+        return 0
+    fi
+    rel=$RELEASES/$ref
+
+    # Stage + verify before root runs anything from this tree. A reused dir is
+    # trusted only if it verifies (clean worktree at the tag's commit); a
+    # partial/corrupt or michael-planted tree is removed and re-staged.
+    set_status staging "staging + verifying worktree for $ref" true
+    if ! stage_release "$ref" "$rel"; then
+        remove_release "$rel"
+        fail "could not stage a verified clean worktree for $ref"; return 1
+    fi
+
+    set_status deps "running deploy/setup.sh for $ref" true
+    if [ ! -f "$rel/deploy/setup.sh" ]; then
+        remove_release "$rel"
+        fail "release $ref has no deploy/setup.sh"; return 1
+    fi
+    if ! timeout 300 bash "$rel/deploy/setup.sh" >"$SETUP_LOG" 2>&1; then
+        remove_release "$rel"
+        fail "setup.sh failed for $ref (see $SETUP_LOG); live tree untouched"
+        return 1
+    fi
+
+    # Record the in-flight switch (prev + boot id) for auto-rollback; the
+    # rollback-target file ($STATE_DIR/previous) is written only AFTER the new
+    # release is confirmed healthy, so a failed flip/watch never mutates it.
+    prev=$CURRENT
+    printf '{"prev":"%s","new":"%s","ts":%s,"boot":"%s"}\n' \
+        "$prev" "$ref" "$(date +%s)" "$(boot_id)" \
+        >"$STATE_DIR/health-pending.json"
+    set_status switching "pointing $LIVE at $rel/hud" true
+    if ! flip_symlink "$ref"; then
+        rm -f "$STATE_DIR/health-pending.json"
+        fail "symlink flip failed"; return 1
+    fi
+    set_status restarting "systemctl restart rubyhud" true
+    systemctl restart rubyhud
+    set_status watching "watching rubyhud for ${WATCH_SECS}s" true
+    if ! watch_hud; then
+        set_status reverting "rubyhud unhealthy on $ref, reverting to $prev" false
+        flip_symlink "$prev"
+        systemctl reset-failed rubyhud 2>/dev/null
+        systemctl restart rubyhud
+        rm -f "$STATE_DIR/health-pending.json"
+        ERROR="rubyhud unhealthy on $ref"
+        set_status rolled-back "reverted to $prev" false
+        return 1
+    fi
+    rm -f "$STATE_DIR/health-pending.json"
+    # Confirmed healthy on $ref: now it's safe to record it as the rollback
+    # target for a future manual/auto rollback.
+    tag_ok "$prev" && printf '%s\n' "$prev" >"$STATE_DIR/previous"
+
+    # Re-verify (tracked files only -- setup.sh adds untracked egg-info) right
+    # before copying the release's deploy/ruby-updated over the root-run
+    # handler, so a tree tampered with after staging cannot self-install a
+    # michael-controlled updater. Skip (do not fail the apply) if it changed.
+    if verify_release "$ref" "$rel" tracked; then
+        set_status finalizing "self-install + unit sync" true
+        self_install "$rel"
+    else
+        set_status finalizing "release tree changed post-stage; skipped self-install" false
+    fi
+    sha=$(git_m rev-parse "$ref^{commit}" 2>/dev/null)
+    printf '{"ref":"%s","sha":"%s","ts":%s,"ok":true}\n' \
+        "$ref" "$sha" "$(date +%s)" >"$STATE_DIR/last-update.json"
+    prune_releases "$ref" "$prev"
+    CURRENT=$ref
+    set_status done "updated $prev -> $ref" true
+}
+
+do_rollback() {
+    local ref=${1:-} prev_cur rel
+    require_repo || return 1
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    if [ -z "$ref" ] && [ -f "$STATE_DIR/previous" ]; then
+        ref=$(head -n 1 "$STATE_DIR/previous" | tr -d '[:space:]')
+    fi
+    [ -n "$ref" ] || { fail "no rollback target (no $STATE_DIR/previous)"; return 1; }
+    tag_ok "$ref" || { fail "bad ref '$ref' (want vX.Y.Z)"; return 1; }
+    TARGET=$ref
+    if [ "$ref" = "$CURRENT" ]; then
+        set_status done "already on $ref" true
+        return 0
+    fi
+    if [ -e "$LIVE" ] && [ ! -L "$LIVE" ]; then
+        fail "$LIVE is not a symlink; run 'ruby-updated adopt <tag>' first"; return 1
+    fi
+    rel=$RELEASES/$ref
+    tag_exists "$ref" || { fail "tag $ref not in local repo"; return 1; }
+    # Re-stage from local objects (no fetch) and verify; a stale/planted dir at
+    # $rel is removed and rebuilt so we never point live at a tampered tree.
+    set_status staging "staging + verifying $ref (no fetch)" true
+    if ! stage_release "$ref" "$rel"; then
+        remove_release "$rel"
+        fail "could not stage a verified clean worktree for $ref"; return 1
+    fi
+    prev_cur=$CURRENT
+    set_status switching "rolling back to $ref" true
+    flip_symlink "$ref" || { fail "symlink flip failed"; return 1; }
+    tag_ok "$prev_cur" && printf '%s\n' "$prev_cur" >"$STATE_DIR/previous"
+    set_status restarting "systemctl restart rubyhud" true
+    systemctl reset-failed rubyhud 2>/dev/null
+    systemctl restart rubyhud
+    set_status watching "watching rubyhud for ${WATCH_SECS}s" true
+    if ! watch_hud; then
+        fail "rubyhud unhealthy after rollback to $ref"
+        return 1
+    fi
+    CURRENT=$ref
+    set_status done "rolled back to $ref" true
+}
+
+do_auto_rollback() {
+    local prev now mt age pbid cbid count last win=3600 max=3
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    if [ -f "$STATE_DIR/health-pending.json" ]; then
+        now=$(date +%s)
+        mt=$(stat -c %Y "$STATE_DIR/health-pending.json" 2>/dev/null || echo 0)
+        age=$((now - mt))
+        prev=$(sed -n 's/.*"prev":"\([^"]*\)".*/\1/p' "$STATE_DIR/health-pending.json")
+        pbid=$(sed -n 's/.*"boot":"\([^"]*\)".*/\1/p' "$STATE_DIR/health-pending.json")
+        cbid=$(boot_id)
+        if [ -n "$pbid" ] && [ -n "$cbid" ] && [ "$pbid" != "$cbid" ]; then
+            # Flag is left over from a pre-reboot apply (power lost during the
+            # watch window); the HUD already came up this boot. Don't roll back
+            # an unrelated later crash to a possibly-older release.
+            set_status restarting "stale health-pending from a previous boot; cleared" true
+            rm -f "$STATE_DIR/health-pending.json"
+        elif [ "$age" -lt 1800 ] && tag_ok "$prev" && [ -d "$RELEASES/$prev/hud" ]; then
+            TARGET=$prev
+            set_status switching "auto-rollback to $prev (pending update unhealthy)" false
+            flip_symlink "$prev"
+            systemctl reset-failed rubyhud 2>/dev/null
+            systemctl restart rubyhud
+            rm -f "$STATE_DIR/health-pending.json"
+            rm -f "$ATTEMPTS_FILE"       # switching to a known-good release
+            CURRENT=$(get_current)
+            ERROR="auto-rollback after failed update"
+            set_status rolled-back "rolled-back (auto) to $prev" false
+            return 0
+        else
+            set_status restarting "stale/unusable health-pending flag cleared" true
+            rm -f "$STATE_DIR/health-pending.json"
+        fi
+    fi
+    # No pending update: the HUD itself (or the rollback target) is failing.
+    # Do NOT reset-failed + restart on every OnFailure -- that zeroes the
+    # systemd start limiter each cycle and turns it into an unbounded restart
+    # loop. Cap revival attempts within a window, then let the limiter latch so
+    # a genuinely broken HUD stays down.
+    now=$(date +%s); count=0; last=0
+    if [ -f "$ATTEMPTS_FILE" ]; then
+        read -r count last < "$ATTEMPTS_FILE" 2>/dev/null
+    fi
+    case "$count" in *[!0-9]*|'') count=0 ;; esac
+    case "$last"  in *[!0-9]*|'') last=0  ;; esac
+    [ $((now - last)) -gt "$win" ] && count=0   # window elapsed: fresh budget
+    count=$((count + 1))
+    printf '%s %s\n' "$count" "$now" > "$ATTEMPTS_FILE"
+    if [ "$count" -gt "$max" ]; then
+        ERROR="rubyhud failing repeatedly; auto-restart exhausted"
+        set_status error "HUD broken; staying down after $max auto-restarts" false
+        return 0
+    fi
+    set_status restarting "no pending update; restart attempt $count/$max" true
+    systemctl reset-failed rubyhud 2>/dev/null
+    systemctl start rubyhud
+    set_status done "rubyhud restarted (no rollback needed)" true
+}
+
+do_adopt() {
+    local ref=${1:-} rel diffs sha
+    require_repo || return 1
+    AVAILABLE=""; ERROR=""
+    if [ -L "$LIVE" ]; then
+        fail "$LIVE is already a symlink (already adopted)"; return 1
+    fi
+    [ -n "$ref" ] || { fail "adopt needs an explicit tag"; return 1; }
+    tag_ok "$ref" || { fail "bad ref '$ref' (want vX.Y.Z)"; return 1; }
+    if [ -e "$HOME_DIR/hud-pre-git-backup" ]; then
+        fail "$HOME_DIR/hud-pre-git-backup already exists; refusing"; return 1
+    fi
+    CURRENT="unmanaged"; TARGET=$ref
+    set_status fetching "git fetch --tags --prune" true
+    fetch_tags >/dev/null 2>&1 || { fail "git fetch failed (offline?)"; return 1; }
+    tag_exists "$ref" || { fail "tag $ref not found after fetch"; return 1; }
+    rel=$RELEASES/$ref
+    set_status staging "staging + verifying worktree for $ref" true
+    if ! stage_release "$ref" "$rel"; then
+        remove_release "$rel"
+        fail "could not stage a verified clean worktree for $ref"; return 1
+    fi
+    set_status comparing "rsync -ricn $rel/hud/ vs $LIVE/" true
+    diffs=$(rsync -ricn --exclude='__pycache__/' "$rel/hud/" "$LIVE/" 2>/dev/null \
+        | grep -cv '^$')
+    set_status comparing "$diffs path(s) differ vs live tree (informational)" true
+    set_status switching "backing up live tree, switching to $ref" true
+    mv "$LIVE" "$HOME_DIR/hud-pre-git-backup" || { fail "backup move failed"; return 1; }
+    if ! flip_symlink "$ref"; then
+        mv "$HOME_DIR/hud-pre-git-backup" "$LIVE"
+        fail "symlink create failed; original tree restored"; return 1
+    fi
+    set_status restarting "systemctl restart rubyhud" true
+    systemctl restart rubyhud
+    set_status watching "watching rubyhud for ${WATCH_SECS}s" true
+    if ! watch_hud; then
+        rm -f "$LIVE"
+        mv "$HOME_DIR/hud-pre-git-backup" "$LIVE"
+        systemctl reset-failed rubyhud 2>/dev/null
+        systemctl restart rubyhud
+        ERROR="rubyhud unhealthy on $ref"
+        set_status rolled-back "adopt reverted; original tree restored" false
+        return 1
+    fi
+    sha=$(git_m rev-parse "$ref^{commit}" 2>/dev/null)
+    printf '{"ref":"%s","sha":"%s","ts":%s,"ok":true}\n' \
+        "$ref" "$sha" "$(date +%s)" >"$STATE_DIR/last-update.json"
+    CURRENT=$ref
+    set_status done "adopted: $LIVE -> $rel/hud (backup: hud-pre-git-backup)" true
+}
+
+do_restart_hud() {
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status restarting "systemctl restart rubyhud" true
+    systemctl restart rubyhud || { fail "restart rubyhud failed"; return 1; }
+    set_status done "rubyhud restarted" true
+}
+
+do_switch_dash() {
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status switching "starting rubydash (Conflicts stops rubyhud)" true
+    systemctl start rubydash || { fail "start rubydash failed"; return 1; }
+    set_status done "rubydash active" true
+}
+
+do_switch_hud() {
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status switching "starting rubyhud (Conflicts stops rubydash)" true
+    systemctl start rubyhud || { fail "start rubyhud failed"; return 1; }
+    set_status done "rubyhud active" true
+}
+
+do_consume() {  # drain the queue, oldest first; delete BEFORE executing
+    # Iterate a glob (exact paths, any bytes) -- never parse `ls` output: a
+    # filename with an embedded newline used to make `ls | head -n1` return a
+    # non-existent path, so cat read nothing and rm deleted nothing, wedging
+    # the loop at 100% CPU on the same file. The millisecond-timestamp request
+    # names sort chronologically, preserving oldest-first ordering. The outer
+    # loop re-scans so requests queued mid-drain are still handled this run.
+    local f body cmd ref progressed
+    while :; do
+        progressed=0
+        for f in "$QUEUE"/*.req; do
+            [ -e "$f" ] || continue          # empty glob, or vanished
+            progressed=1
+            body=$(cat "$f" 2>/dev/null)
+            rm -f "$f"
+            if [ -e "$f" ]; then             # unlink failed: never re-run it
+                set_status error "cannot remove queue file; aborting drain" false
+                return 1
+            fi
+            cmd=$(printf '%s' "$body" | sed -n 's/.*"cmd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+            ref=$(printf '%s' "$body" | sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+            case "$cmd" in
+                check)        do_check ;;
+                apply)        do_apply "$ref" ;;
+                rollback)     do_rollback "$ref" ;;
+                adopt)        do_adopt "$ref" ;;
+                restart-hud)  do_restart_hud ;;
+                switch-dash)  do_switch_dash ;;
+                switch-hud)   do_switch_hud ;;
+                '')           set_status error "unreadable request; skipped" false ;;
+                *)            set_status error "unknown cmd '$cmd'; skipped" false ;;
+            esac
+        done
+        [ "$progressed" -eq 1 ] || break
+    done
+    return 0
+}
+
+# --- main --------------------------------------------------------------------
+
+VERB=${1:-}
+ARG=${2:-}
+USAGE='--consume|check|apply [ref]|rollback [ref]|auto-rollback|adopt <tag>|restart-hud|switch-dash|switch-hud'
+
+if [ -z "$VERB" ]; then
+    printf '{"ts":%s,"phase":"error","msg":"usage: ruby-updated %s","ok":false}\n' \
+        "$(date +%s)" "$USAGE"
+    exit 2
+fi
+if [ ! -d "$RUN_DIR" ]; then
+    printf '{"ts":%s,"phase":"error","msg":"missing %s (tmpfiles not installed, or wrong host)","ok":false}\n' \
+        "$(date +%s)" "$RUN_DIR"
+    exit 1
+fi
+if [ "$(id -u)" -ne 0 ]; then
+    printf '{"ts":%s,"phase":"error","msg":"ruby-updated must run as root","ok":false}\n' \
+        "$(date +%s)"
+    exit 1
+fi
+if [ ! -d "$STATE_DIR" ]; then
+    mkdir -p "$STATE_DIR"
+    chown "$MICHAEL:$MICHAEL" "$STATE_DIR"
+fi
+
+exec 9>>"$LOCK"
+if ! flock -n 9; then
+    set_status busy "another ruby-updated instance holds the lock" false
+    exit 1
+fi
+
+case "$VERB" in
+    --consume)     do_consume;            exit $? ;;
+    check)         do_check;              exit $? ;;
+    apply)         do_apply "$ARG";       exit $? ;;
+    rollback)      do_rollback "$ARG";    exit $? ;;
+    auto-rollback) do_auto_rollback;      exit $? ;;
+    adopt)         do_adopt "$ARG";       exit $? ;;
+    restart-hud)   do_restart_hud;        exit $? ;;
+    switch-dash)   do_switch_dash;        exit $? ;;
+    switch-hud)    do_switch_hud;         exit $? ;;
+    *)
+        printf '{"ts":%s,"phase":"error","msg":"unknown verb %s; usage: ruby-updated %s","ok":false}\n' \
+            "$(date +%s)" "$(json_escape "$VERB")" "$USAGE"
+        exit 2
+        ;;
+esac

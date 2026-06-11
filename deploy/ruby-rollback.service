@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-rollback rubyhud after repeated start failures
+# Cap how often the rollback handler itself may be (re)invoked, so an
+# OnFailure storm cannot drive it in a tight loop. The handler also caps its
+# own restart attempts in hud-state/rollback-attempts.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ruby-updated auto-rollback
+TimeoutStartSec=5min

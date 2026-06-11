@@ -17,23 +17,24 @@ failure-guarded so a missing tool or file renders '--' instead of raising.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
 from collections import deque
 
 from . import gauges, theme
-from .render import (COOLANT_HI, COOLANT_LO, RPM_MAX, RPM_REDLINE, SS, SW,
+from .render import (COOLANT_HI, COOLANT_LO, RPM_MAX, RPM_REDLINE, SH, SS, SW,
                      VOLTS_HI, VOLTS_LO, _frac, _num)
 from .signals import _run
-from .theme import (ACCENT, ACCENT_GLOW, CARD_BORDER, DANGER, OK, PANEL,
-                    ROW_A, ROW_B, TEXT, TEXT_DIM, TICK, WARN, font, mix)
+from .theme import (ACCENT, ACCENT_GLOW, CARD_BORDER, CARD_EDGE, DANGER, OK,
+                    PANEL, ROW_A, ROW_B, TEXT, TEXT_DIM, TICK, WARN, font, mix)
 
 BG = theme.BG
 
 
 class Page:
-    """Base page: render the body; handle_tap returns True when consumed."""
+    """Base page: render the body; handle_* return True when consumed."""
 
     name = "PAGE"
 
@@ -45,6 +46,14 @@ class Page:
         pass
 
     def handle_tap(self, x, y, ctx):
+        return False
+
+    def handle_hold(self, x, y, ctx):
+        """Long-press; unconsumed holds cycle pages (see __main__)."""
+        return False
+
+    def handle_swipe_v(self, direction, ctx):
+        """Vertical swipe; direction is 'up' or 'down'."""
         return False
 
 
@@ -698,12 +707,455 @@ class SystemPage(Page):
 
 
 # --------------------------------------------------------------------------- #
+# Page 4: AI vision (rubyvision service over /dev/shm)
+# --------------------------------------------------------------------------- #
+# The rubyvision service (separate process / systemd unit) does camera ->
+# Hailo inference -> annotated frame and drops files on a tmpfs dir. The HUD
+# only reads the latest values; it never blocks on the service, and renders a
+# clear OFFLINE / DEMO state when the service is down, stale, or running
+# without a camera / NPU. IPC files (see vision/ spec):
+#   status.json  written >= 2 Hz: {"v","ts","seq","state","mode","source",
+#                "model","inference_fps","pipeline_fps","hailo_temp_c",
+#                "soc_temp_c","frame":{"file","w","h","seq"},"detections":[...]}
+#   frame.jpg    800x450 RGB JPEG, annotated (boxes/labels + DEMO badge).
+#   cmd.json     HUD -> service: {"seq","cmd":"cycle_source|cycle_model"}.
+_VISION_DIR_DEFAULT = "/dev/shm/rubyvision"
+_VISION_STALE_S = 2.0  # status older than this -> service considered offline
+
+
+class VisionClient:
+    """Read-only-ish view of the rubyvision tmpfs drop dir.
+
+    status() is cached on the status.json mtime so we only re-parse when the
+    service rewrites it. frame() decodes the JPEG only when the published
+    frame.seq changes, caching the PIL Image otherwise (decode is the only
+    non-trivial cost per frame). write_cmd() bumps a local seq and atomically
+    writes cmd.json. Everything is failure-guarded: a missing dir / partial
+    write / bad JSON degrades to offline rather than raising into render."""
+
+    def __init__(self, vision_dir=None):
+        self.dir = vision_dir or os.environ.get(
+            "RUBYVISION_DIR", _VISION_DIR_DEFAULT)
+        self._status_path = os.path.join(self.dir, "status.json")
+        self._cmd_path = os.path.join(self.dir, "cmd.json")
+        self._status_mtime = None
+        self._status = None         # last parsed status dict
+        self._frame_seq = None      # seq of the cached decoded frame
+        self._frame_mtime = None    # mtime fallback gate when seq is missing
+        self._frame_img = None      # cached PIL.Image (RGB) or None
+        self._cmd_seq = 0
+
+    # -- status ------------------------------------------------------------
+    def status(self):
+        """Latest parsed status dict, or None if missing/unreadable.
+
+        Re-parses only when status.json mtime advances; otherwise returns the
+        cached dict (so calling this every frame is cheap)."""
+        try:
+            mtime = os.path.getmtime(self._status_path)
+        except Exception:
+            self._status_mtime = None
+            self._status = None
+            return None
+        if mtime != self._status_mtime:
+            try:
+                with open(self._status_path, "rb") as fh:
+                    self._status = json.loads(fh.read().decode("utf-8"))
+                # Only commit the mtime AFTER a successful parse, so a malformed
+                # but stable file is retried on the next call (rather than being
+                # ignored until the next mtime change). Partial mid-write reads
+                # are still safe: keep the last good status, never raise.
+                self._status_mtime = mtime
+            except Exception:
+                pass
+        return self._status
+
+    def offline(self, status=None):
+        """True when there is no status, it is stale (> _VISION_STALE_S), or
+        it explicitly reports an error condition we should surface as OFFLINE
+        rather than a live preview."""
+        st = status if status is not None else self.status()
+        if not isinstance(st, dict):
+            return True
+        # A hard service error must surface as the prominent OFFLINE card even
+        # with a fresh timestamp (e.g. camera/HEF open failed, or the clean
+        # shutdown status); a small chip would under-surface it.
+        if str(st.get("state") or "") == "error":
+            return True
+        try:
+            ts = float(st.get("ts"))
+        except Exception:
+            return True
+        return (time.time() - ts) > _VISION_STALE_S
+
+    # -- frame -------------------------------------------------------------
+    def frame(self, status=None):
+        """Decoded latest frame as a PIL RGB Image, or None.
+
+        Only decodes when the published frame.seq changes; otherwise returns
+        the cached image. The file is read fully into memory first so a
+        concurrent service rewrite (atomic os.replace) can't tear the decode."""
+        st = status if status is not None else self.status()
+        if not isinstance(st, dict):
+            return self._frame_img
+        finfo = st.get("frame") or {}
+        try:
+            seq = int(finfo.get("seq"))
+        except Exception:
+            try:
+                seq = int(st.get("seq"))
+            except Exception:
+                seq = None
+        if seq is not None and seq == self._frame_seq and \
+                self._frame_img is not None:
+            return self._frame_img
+        fname = finfo.get("file") or "frame.jpg"
+        fpath = os.path.join(self.dir, str(fname))
+        # When seq is unresolved (spec guarantees it, so defensive only), gate
+        # on the frame file mtime instead of decoding every frame -- a missing
+        # seq must still avoid per-frame JPEG decode, not silently defeat the
+        # frame-budget guarantee.
+        if seq is None and self._frame_img is not None:
+            try:
+                fmtime = os.path.getmtime(fpath)
+            except Exception:
+                fmtime = None
+            if fmtime is not None and fmtime == self._frame_mtime:
+                return self._frame_img
+        try:
+            from PIL import Image  # lazy: render env always has Pillow
+            with open(fpath, "rb") as fh:
+                data = fh.read()
+            import io
+            img = Image.open(io.BytesIO(data))
+            img.load()
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            self._frame_img = img
+            self._frame_seq = seq
+            try:
+                self._frame_mtime = os.path.getmtime(fpath)
+            except Exception:
+                self._frame_mtime = None
+        except Exception:
+            # Keep last good frame; don't blank the preview on one bad read.
+            pass
+        return self._frame_img
+
+    # -- command -----------------------------------------------------------
+    def write_cmd(self, cmd):
+        """Atomically write cmd.json asking the service to do `cmd`.
+
+        Bumps a local monotonically-increasing seq so the service can dedupe.
+        Never raises (a failed control write must not break the page)."""
+        self._cmd_seq += 1
+        payload = {"seq": self._cmd_seq, "cmd": str(cmd)}
+        tmp = self._cmd_path + ".tmp"
+        try:
+            os.makedirs(self.dir, exist_ok=True)
+            with open(tmp, "wb") as fh:
+                fh.write(json.dumps(payload).encode("utf-8"))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self._cmd_path)
+            return True
+        except Exception:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            return False
+
+
+class AIVisionPage(Page):
+    name = "AI VISION"
+
+    # Preview bezel (screen px, pre-supersample). The published frame is
+    # 800x450; we paste it at (PREV_X, PREV_Y) scaled by SS with NEAREST
+    # (the canvas is 2x; a clean integer scale keeps boxes/labels crisp).
+    PREV_W, PREV_H = 800, 450
+    PREV_X, PREV_Y = 40, 120
+    BEZEL_PAD = 8                    # bezel rect inset around the preview
+
+    # Right info column (chips + detection list) beside the preview.
+    SIDE_X0 = 880
+    SIDE_X1 = 1248
+
+    # Bottom chip strip (model / source / fps / temp / state).
+    CHIP_Y = 590
+    CHIP_X = 40
+    # Right edge of the rendered chip strip (screen px), updated each frame by
+    # _chip_strip; the cycle_model tap zone is bounded to this so it matches the
+    # visible chips rather than spanning empty space out to SIDE_X1. Seeded to a
+    # sane extent for taps that arrive before the first render.
+    _chip_x_end = 880
+
+    # ---- static chrome ---------------------------------------------------
+    def render_static(self, draw, img):
+        # Title, baseline-aligned with the other pages' header band.
+        gauges.tracked_text(draw, 52 * SS, 84 * SS, "AI VISION",
+                            font(28 * SS, "bold"), TEXT, tracking=4 * SS)
+
+        # Preview bezel: a recessed dark plate behind the frame so an OFFLINE
+        # / letterboxed preview reads as a deliberate viewport, not a gap.
+        bx0 = (self.PREV_X - self.BEZEL_PAD) * SS
+        by0 = (self.PREV_Y - self.BEZEL_PAD) * SS
+        bx1 = (self.PREV_X + self.PREV_W + self.BEZEL_PAD) * SS
+        by1 = (self.PREV_Y + self.PREV_H + self.BEZEL_PAD) * SS
+        draw.rounded_rectangle([bx0, by0, bx1, by1], radius=12 * SS,
+                               fill=mix(BG, PANEL, 0.5),
+                               outline=CARD_BORDER, width=SS)
+        draw.line([(bx0 + 12 * SS, by0 + SS), (bx1 - 12 * SS, by0 + SS)],
+                  fill=CARD_EDGE, width=SS)
+
+        # Right info card (detection list lives here per frame).
+        gauges.card(draw, self.SIDE_X0 * SS, self.PREV_Y * SS,
+                    self.SIDE_X1 * SS, (self.PREV_Y + self.PREV_H) * SS,
+                    radius=14 * SS, scale=SS)
+        gauges.tracked_text(draw, (self.SIDE_X0 + 20) * SS,
+                            (self.PREV_Y + 14) * SS, "DETECTIONS",
+                            font(17 * SS, "bold"), TEXT_DIM, tracking=3 * SS)
+        draw.line([((self.SIDE_X0 + 12) * SS, (self.PREV_Y + 46) * SS),
+                   ((self.SIDE_X1 - 12) * SS, (self.PREV_Y + 46) * SS)],
+                  fill=CARD_BORDER, width=SS)
+
+        # Chip-strip separator above the bottom info chips.
+        draw.line([(self.CHIP_X * SS, (self.CHIP_Y - 14) * SS),
+                   (self.SIDE_X1 * SS, (self.CHIP_Y - 14) * SS)],
+                  fill=CARD_BORDER, width=SS)
+
+    # ---- dynamic ---------------------------------------------------------
+    def render(self, draw, img, snap, ctx):
+        vc = ctx.get("vision")
+        if vc is None:
+            vc = VisionClient()
+            ctx["vision"] = vc
+        st = vc.status()
+        offline = vc.offline(st)
+
+        if offline:
+            self._render_offline(draw, img, st)
+            return
+
+        state = str(st.get("state") or "")
+        mode = str(st.get("mode") or "")
+        source = str(st.get("source") or "")
+        dets = st.get("detections") or []
+
+        # Paste the latest annotated frame into the bezel (NEAREST keeps the
+        # service-drawn boxes/labels crisp at the 2x canvas scale).
+        self._paste_preview(img, vc, st)
+
+        # Degraded-mode badge inside the preview (top-left). The service also
+        # burns a DEMO badge into the JPEG; this is the HUD-side, palette-
+        # correct echo so the mode is unmistakable even if the frame stalls.
+        badge = self._badge_for(state, mode, source)
+        if badge is not None:
+            self._draw_badge(draw, badge[0], badge[1])
+
+        self._chip_strip(draw, st, state, mode, source)
+        self._detection_list(draw, dets)
+
+    # -- preview paste -----------------------------------------------------
+    def _paste_preview(self, img, vc, st):
+        frame = vc.frame(st)
+        x = self.PREV_X * SS
+        y = self.PREV_Y * SS
+        w = self.PREV_W * SS
+        h = self.PREV_H * SS
+        if frame is None:
+            # Status is live but no decoded frame yet: dark viewport + hint.
+            from PIL import ImageDraw
+            d = ImageDraw.Draw(img)
+            d.rectangle([x, y, x + w, y + h], fill=mix(BG, PANEL, 0.3))
+            gauges._centered_text(d, x + w // 2, y + h // 2, "WAITING FOR FRAME",
+                                  font(26 * SS, "bold"), TEXT_DIM)
+            return
+        try:
+            from PIL import Image
+            scaled = frame.resize((w, h), Image.NEAREST)
+            img.paste(scaled, (x, y))
+        except Exception:
+            pass
+
+    # -- badge -------------------------------------------------------------
+    @staticmethod
+    def _badge_for(state, mode, source):
+        """Return (text, color) for the in-preview mode badge, or None.
+
+        Four visually-distinct degraded states (OFFLINE handled separately):
+          no_camera          -> amber "DEMO - NO CAMERA"
+          stub mode          -> amber "DEMO - CPU STUB"
+          pattern/video src  -> amber "DEMO" (synthetic input)
+          ok + hailo + camera -> no badge (live)."""
+        if state == "no_camera":
+            return ("DEMO - NO CAMERA", WARN)
+        if mode and mode != "hailo":
+            return ("DEMO - CPU STUB", WARN)
+        if source in ("pattern", "video"):
+            return ("DEMO", WARN)
+        return None
+
+    def _draw_badge(self, draw, text, color):
+        x = (self.PREV_X + 10) * SS
+        y = (self.PREV_Y + 10) * SS
+        gauges.status_chip(draw, x, y, text, color, filled=True, scale=SS)
+
+    # -- bottom chip strip -------------------------------------------------
+    def _chip_strip(self, draw, st, state, mode, source):
+        live = (state == "ok" and mode == "hailo"
+                and source not in ("pattern", "video"))
+        ok_col = OK if live else WARN
+
+        model = str(st.get("model") or "?")
+        inf = _num(st.get("inference_fps"))
+        htemp = _num(st.get("hailo_temp_c"))
+
+        chips = []
+        chips.append(("MODEL " + model[:18], ok_col))
+        chips.append(("SRC " + (source or "?").upper(), ok_col))
+        chips.append(("INF %d fps" % int(round(inf)) if inf is not None
+                      else "INF -- fps", TEXT_DIM))
+        chips.append(("HAILO %d C" % int(round(htemp)) if htemp is not None
+                      else "HAILO --", TEXT_DIM))
+        chips.append((("LIVE" if live else (state or "?").upper()),
+                      OK if live else WARN))
+
+        x = self.CHIP_X * SS
+        y = self.CHIP_Y * SS
+        for txt, col in chips:
+            w, _ = gauges.status_chip(draw, x, y, txt, col,
+                                      filled=(txt.startswith("MODEL")
+                                              or txt in ("LIVE",)),
+                                      scale=SS)
+            x += w + 12 * SS
+        # Record the visible right edge (back in screen px) for tap bounding.
+        self._chip_x_end = int(x / SS)
+
+    # -- detection list ----------------------------------------------------
+    def _detection_list(self, draw, dets):
+        x0 = (self.SIDE_X0 + 20) * SS
+        x1 = (self.SIDE_X1 - 20) * SS
+        y = (self.PREV_Y + 60) * SS
+        rfont = font(20 * SS, "mono")
+
+        try:
+            top = sorted(dets, key=lambda d: float(d.get("conf", 0.0)),
+                         reverse=True)
+        except Exception:
+            top = list(dets)
+
+        # Count chip at the bottom of the card.
+        cy = (self.PREV_Y + self.PREV_H - 40) * SS
+        gauges.status_chip(draw, x0, cy, "%d OBJECTS" % len(top),
+                           ACCENT if top else TEXT_DIM,
+                           filled=bool(top), scale=SS)
+
+        if not top:
+            gauges._centered_text(draw, (x0 + x1) // 2,
+                                  (self.PREV_Y + 240) * SS, "NONE",
+                                  font(26 * SS, "bold"), TEXT_DIM)
+            return
+
+        row_h = 40 * SS
+        max_rows = 8
+        for d in top[:max_rows]:
+            try:
+                cls = str(d.get("cls") or "?")[:14]
+                conf = float(d.get("conf", 0.0))
+            except Exception:
+                continue
+            draw.text((x0, y), cls, font=rfont, fill=TEXT)
+            pct = "%d%%" % int(round(max(0.0, min(1.0, conf)) * 100))
+            try:
+                pw = draw.textlength(pct, font=rfont)
+            except Exception:
+                pw = gauges._text_size(draw, pct, rfont)[0]
+            draw.text((x1 - pw, y), pct, font=rfont, fill=ACCENT_GLOW)
+            y += row_h
+        extra = len(top) - max_rows
+        if extra > 0:
+            draw.text((x0, y), "+%d more" % extra, font=font(18 * SS, "bold"),
+                      fill=TEXT_DIM)
+
+    # -- offline card ------------------------------------------------------
+    def _render_offline(self, draw, img, st):
+        """Full-preview OFFLINE card: dim plate + DANGER title + hint. Used
+        when the service is down or its status is stale (> 2s)."""
+        x = self.PREV_X * SS
+        y = self.PREV_Y * SS
+        w = self.PREV_W * SS
+        h = self.PREV_H * SS
+        draw.rectangle([x, y, x + w, y + h], fill=mix(BG, PANEL, 0.3))
+
+        cx = x + w // 2
+        cy = y + h // 2
+        # Soft DANGER glow behind the title.
+        g = gauges.glow_dot(60 * SS, DANGER, strength=0.5)
+        img.paste(g, (cx - g.width // 2, cy - 40 * SS - g.height // 2), g)
+        gauges._centered_text(draw, cx, cy - 30 * SS,
+                              "VISION SERVICE OFFLINE",
+                              font(38 * SS, "bold"), DANGER)
+        hint = "rubyvision not running or stale"
+        if isinstance(st, dict) and st.get("error"):
+            hint = str(st.get("error"))[:48]
+        gauges._centered_text(draw, cx, cy + 24 * SS, hint,
+                              font(22 * SS, "regular"), TEXT_DIM)
+        gauges._centered_text(draw, cx, cy + 70 * SS,
+                              "systemctl status rubyvision",
+                              font(20 * SS, "mono"), mix(BG, TEXT_DIM, 0.75))
+
+        # Dim the side card contents to match (no live detections).
+        gauges.status_chip(draw, (self.SIDE_X0 + 20) * SS,
+                           (self.PREV_Y + 60) * SS, "NO DATA", TEXT_DIM,
+                           scale=SS)
+        # Offline chip strip.
+        gauges.status_chip(draw, self.CHIP_X * SS, self.CHIP_Y * SS,
+                           "OFFLINE", DANGER, filled=True, scale=SS)
+
+    # ---- input -----------------------------------------------------------
+    def handle_tap(self, x, y, ctx):
+        vc = ctx.get("vision")
+        if vc is None:
+            vc = VisionClient()
+            ctx["vision"] = vc
+        # Tap inside the preview -> cycle the capture source.
+        if (self.PREV_X <= x <= self.PREV_X + self.PREV_W
+                and self.PREV_Y <= y <= self.PREV_Y + self.PREV_H):
+            vc.write_cmd("cycle_source")
+            return True
+        # Tap on the bottom chip strip -> cycle the model. Bound to the actual
+        # rendered chip extent (not SIDE_X1) so empty space to the right of the
+        # last chip / below the DETECTIONS card is not a hidden tap target.
+        if (self.CHIP_X <= x <= self._chip_x_end
+                and self.CHIP_Y - 14 <= y <= self.CHIP_Y + 44):
+            vc.write_cmd("cycle_model")
+            return True
+        return False
+
+
+# --------------------------------------------------------------------------- #
 # factories
 # --------------------------------------------------------------------------- #
 def make_pages() -> list:
-    return [GaugesPage(), CanPage(), SystemPage()]
+    from .settings import SettingsPage  # function-level: no import cycle
+    pages = [GaugesPage(), CanPage(), SystemPage(), SettingsPage()]
+    # Vision page is appended after Settings if present, else at the end.
+    # (Construction is import-guarded so a malformed page never breaks the
+    # rotation; the page itself degrades to OFFLINE when the service is down.)
+    try:
+        vision = AIVisionPage()
+    except Exception:
+        vision = None
+    if vision is not None:
+        insert_at = len(pages)
+        for i, p in enumerate(pages):
+            if getattr(p, "name", "") == "SETTINGS":
+                insert_at = i + 1
+        pages.insert(insert_at, vision)
+    return pages
 
 
 def make_ctx(channel: str) -> dict:
     return {"theme": theme, "gauges": gauges, "channel": channel,
-            "frozen": False, "cpu_hist": deque(maxlen=60)}
+            "frozen": False, "cpu_hist": deque(maxlen=60), "vision": None}

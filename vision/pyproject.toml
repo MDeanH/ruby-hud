@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rubyvision"
+version = "0.1.0"
+description = "Ruby MX-5 camera -> Hailo inference -> annotated frame service (decoupled from the HUD via /dev/shm file drops)."
+requires-python = ">=3.11"
+# NO hard dependencies: everything is optional / lazily imported.
+#   - pillow + numpy are expected to be present (shared with rubyhud).
+#   - opencv (cv2), picamera2, hailo_platform are imported LAZILY inside the
+#     source / detector implementations; absence degrades gracefully to the
+#     pure-numpy PatternSource + StubDetector path.
+dependencies = []
+
+[project.optional-dependencies]
+# Documented extras (installed via apt/system-site-packages on the Pi, NOT via
+# pip into ruby-env). Listed here only for discoverability.
+camera = ["picamera2"]
+usb = ["opencv-python"]
+
+[tool.setuptools.packages.find]
+include = ["rubyvision*"]
