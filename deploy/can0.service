@@ -1,0 +1,16 @@
+[Unit]
+Description=Configure can0 (CANable candleLight) 500kbps
+BindsTo=sys-subsystem-net-devices-can0.device
+After=sys-subsystem-net-devices-can0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/ip link set can0 down
+ExecStart=/usr/sbin/ip link set can0 type can bitrate 500000 listen-only on
+ExecStart=/usr/sbin/ip link set up can0
+ExecStart=/usr/sbin/ip link set can0 txqueuelen 1000
+ExecStop=/usr/sbin/ip link set down can0
+
+[Install]
+WantedBy=sys-subsystem-net-devices-can0.device

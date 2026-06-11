@@ -1,0 +1,15 @@
+[Unit]
+Description=Persistent CAN capture to ~/captures (listen-only bus)
+BindsTo=sys-subsystem-net-devices-can0.device
+After=can0.service sys-subsystem-net-devices-can0.device
+
+[Service]
+User=michael
+Group=michael
+WorkingDirectory=/home/michael/captures
+ExecStart=/usr/bin/candump -l can0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=sys-subsystem-net-devices-can0.device

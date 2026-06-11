@@ -1,0 +1,23 @@
+[Unit]
+Description=Ruby graphical HUD
+Conflicts=getty@tty1.service rubydash.service
+After=systemd-user-sessions.service
+ConditionPathExists=/home/michael/hud/rubyhud/__main__.py
+
+[Service]
+User=michael
+Group=michael
+SupplementaryGroups=video
+WorkingDirectory=/home/michael/hud
+Environment=PYTHONUNBUFFERED=1 RUBYHUD_CHANNEL=can0
+ExecStart=/home/michael/ruby-env/bin/python -m rubyhud
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=tty
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
