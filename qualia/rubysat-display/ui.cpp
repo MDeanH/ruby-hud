@@ -1,6 +1,6 @@
 // ui.cpp — LVGL v8 gauge layout + setters for the rubysat display.
 //
-// Layout (720x720, origin top-left):
+// Layout (480x480, origin top-left — TL040WVS03 4.0" square):
 //   * Full-screen RPM arc gauge (0..8000), redline segment 6500+.
 //   * Center: huge MPH number + "MPH" label.
 //   * Below center: gear indicator (big glyph).
@@ -79,18 +79,18 @@ static lv_obj_t *make_minibar(lv_obj_t *parent, const char *name, int x,
                               lv_obj_t **out_val) {
   lv_obj_t *cont = lv_obj_create(parent);
   lv_obj_remove_style_all(cont);
-  lv_obj_set_size(cont, 150, 120);
-  lv_obj_set_pos(cont, x, 580);
+  lv_obj_set_size(cont, 112, 84);
+  lv_obj_set_pos(cont, x, 384);
 
   lv_obj_t *cap = lv_label_create(cont);
   lv_label_set_text(cap, name);
   lv_obj_set_style_text_color(cap, C_DIM, 0);
-  lv_obj_set_style_text_font(cap, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0);
   lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 0);
 
   lv_obj_t *bar = lv_bar_create(cont);
-  lv_obj_set_size(bar, 130, 16);
-  lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_size(bar, 100, 14);
+  lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 22);
   lv_obj_set_style_bg_color(bar, C_TRACK, LV_PART_MAIN);
   lv_obj_set_style_bg_color(bar, C_ACCENT, LV_PART_INDICATOR);
   lv_obj_set_style_radius(bar, 8, LV_PART_MAIN);
@@ -101,8 +101,8 @@ static lv_obj_t *make_minibar(lv_obj_t *parent, const char *name, int x,
   lv_obj_t *val = lv_label_create(cont);
   lv_label_set_text(val, "--");
   lv_obj_set_style_text_color(val, C_TEXT, 0);
-  lv_obj_set_style_text_font(val, &lv_font_montserrat_28, 0);
-  lv_obj_align(val, LV_ALIGN_TOP_MID, 0, 56);
+  lv_obj_set_style_text_font(val, &lv_font_montserrat_22, 0);
+  lv_obj_align(val, LV_ALIGN_TOP_MID, 0, 42);
 
   *out_val = val;
   return bar;
@@ -129,8 +129,8 @@ void ui_init() {
 
   // ---- RPM arc (full-screen ring) ----
   arc_rpm = lv_arc_create(scr);
-  lv_obj_set_size(arc_rpm, 700, 700);
-  lv_obj_center(arc_rpm);
+  lv_obj_set_size(arc_rpm, 460, 460);
+  lv_obj_align(arc_rpm, LV_ALIGN_CENTER, 0, -26);
   lv_arc_set_rotation(arc_rpm, 135);
   lv_arc_set_bg_angles(arc_rpm, 0, 270);
   lv_arc_set_range(arc_rpm, 0, RPM_MAX);
@@ -138,16 +138,16 @@ void ui_init() {
   lv_obj_remove_style(arc_rpm, NULL, LV_PART_KNOB);          // no drag knob
   lv_obj_clear_flag(arc_rpm, LV_OBJ_FLAG_CLICKABLE);         // display only
   lv_obj_set_style_arc_color(arc_rpm, C_TRACK, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(arc_rpm, 22, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(arc_rpm, 14, LV_PART_MAIN);
   lv_obj_set_style_arc_color(arc_rpm, C_ACCENT, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_width(arc_rpm, 22, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(arc_rpm, 14, LV_PART_INDICATOR);
 
   // small numeric rpm readout near bottom of the ring
   lbl_rpm = lv_label_create(scr);
   lv_label_set_text(lbl_rpm, "---- RPM");
   lv_obj_set_style_text_color(lbl_rpm, C_DIM, 0);
   lv_obj_set_style_text_font(lbl_rpm, &lv_font_montserrat_28, 0);
-  lv_obj_align(lbl_rpm, LV_ALIGN_CENTER, 0, 150);
+  lv_obj_align(lbl_rpm, LV_ALIGN_CENTER, 0, 70);
 
   // ---- center MPH ----
   lbl_mph = lv_label_create(scr);
@@ -157,32 +157,32 @@ void ui_init() {
   // reads cleanly at arm's length without bitmap upscaling. (For an even larger
   // numeral, build a custom font with lv_font_conv and swap it in here.)
   lv_obj_set_style_text_font(lbl_mph, &lv_font_montserrat_48, 0);
-  lv_obj_align(lbl_mph, LV_ALIGN_CENTER, 0, -40);
+  lv_obj_align(lbl_mph, LV_ALIGN_CENTER, 0, -54);
 
   lbl_mph_unit = lv_label_create(scr);
   lv_label_set_text(lbl_mph_unit, "MPH");
   lv_obj_set_style_text_color(lbl_mph_unit, C_DIM, 0);
   lv_obj_set_style_text_font(lbl_mph_unit, &lv_font_montserrat_28, 0);
-  lv_obj_align(lbl_mph_unit, LV_ALIGN_CENTER, 0, 40);
+  lv_obj_align(lbl_mph_unit, LV_ALIGN_CENTER, 0, -8);
 
   // ---- gear ----
   lbl_gear = lv_label_create(scr);
   lv_label_set_text(lbl_gear, "-");
   lv_obj_set_style_text_color(lbl_gear, C_GLOW, 0);
   lv_obj_set_style_text_font(lbl_gear, &lv_font_montserrat_48, 0);
-  lv_obj_align(lbl_gear, LV_ALIGN_CENTER, 0, 95);
+  lv_obj_align(lbl_gear, LV_ALIGN_CENTER, 0, 34);
 
   // ---- mini-bars (bottom row) ----
-  bar_cool = make_minibar(scr, "COOL", 30,  &val_cool);
-  bar_volt = make_minibar(scr, "VOLT", 200, &val_volt);
-  bar_thr  = make_minibar(scr, "THR",  370, &val_thr);
-  bar_fuel = make_minibar(scr, "FUEL", 540, &val_fuel);
+  bar_cool = make_minibar(scr, "COOL", 6,  &val_cool);
+  bar_volt = make_minibar(scr, "VOLT", 124, &val_volt);
+  bar_thr  = make_minibar(scr, "THR",  242, &val_thr);
+  bar_fuel = make_minibar(scr, "FUEL", 360, &val_fuel);
 
   // ---- CAN chip (top-left) ----
   chip_can = lv_obj_create(scr);
   lv_obj_remove_style_all(chip_can);
   lv_obj_add_style(chip_can, &st_chip, 0);
-  lv_obj_set_size(chip_can, 180, 44);
+  lv_obj_set_size(chip_can, 132, 34);
   lv_obj_align(chip_can, LV_ALIGN_TOP_LEFT, 16, 16);
   chip_can_lbl = lv_label_create(chip_can);
   lv_label_set_text(chip_can_lbl, "CAN --");
@@ -194,7 +194,7 @@ void ui_init() {
   chip_vis = lv_obj_create(scr);
   lv_obj_remove_style_all(chip_vis);
   lv_obj_add_style(chip_vis, &st_chip, 0);
-  lv_obj_set_size(chip_vis, 190, 44);
+  lv_obj_set_size(chip_vis, 140, 34);
   lv_obj_align(chip_vis, LV_ALIGN_TOP_RIGHT, -16, 16);
   chip_vis_lbl = lv_label_create(chip_vis);
   lv_label_set_text(chip_vis_lbl, "VIS off");
@@ -220,14 +220,14 @@ void ui_init() {
   // ---- invisible page tap-zones (left/right edges) ----
   lv_obj_t *zl = lv_obj_create(scr);
   lv_obj_remove_style_all(zl);
-  lv_obj_set_size(zl, 90, 460);
+  lv_obj_set_size(zl, 70, 360);
   lv_obj_align(zl, LV_ALIGN_LEFT_MID, 0, 0);
   lv_obj_add_flag(zl, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(zl, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_prev");
 
   lv_obj_t *zr = lv_obj_create(scr);
   lv_obj_remove_style_all(zr);
-  lv_obj_set_size(zr, 90, 460);
+  lv_obj_set_size(zr, 70, 360);
   lv_obj_align(zr, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_add_flag(zr, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(zr, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_next");

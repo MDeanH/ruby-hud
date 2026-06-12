@@ -36,8 +36,8 @@ static void send_cmd(const char *cmd, int x, int y);
 // Partial draw buffer in PSRAM. 720 wide * N lines * 2 bytes (RGB565). A buffer
 // of ~1/10th the screen (72 lines) keeps RAM modest while flushing fast. LVGL
 // v8 single-buffer partial render is plenty for these gauges.
-static const uint32_t SCREEN_W = 720;
-static const uint32_t SCREEN_H = 720;
+static const uint32_t SCREEN_W = 480;
+static const uint32_t SCREEN_H = 480;
 static const uint32_t DRAW_LINES = 72;                  // buffer height in px
 static const uint32_t DRAW_BUF_PX = SCREEN_W * DRAW_LINES;
 

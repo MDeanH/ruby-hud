@@ -24,12 +24,16 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-// Touch I2C address: 0x48 (FocalTech FT5336U on the TL040HDS20CT, documented).
-static const uint8_t TOUCH_ADDR = 0x48;
+// Touch I2C address: probed from candidates — 0x48 (FT5336U, Adafruit square
+// panels), 0x38 (FT6206/FT5x06 default), 0x15 (CST8xx-class). The FT-style
+// register read below is correct for the first two; a CST chip will simply
+// report no touches (best-effort by design).
+static const uint8_t TOUCH_ADDRS[] = {0x48, 0x38, 0x15};
+static uint8_t TOUCH_ADDR = 0;              // resolved by probe; 0 = none
 
-// Panel geometry for coordinate mapping.
-static const int16_t TOUCH_PANEL_W = 720;
-static const int16_t TOUCH_PANEL_H = 720;
+// Panel geometry for coordinate mapping (TL040WVS03: 480x480).
+static const int16_t TOUCH_PANEL_W = 480;
+static const int16_t TOUCH_PANEL_H = 480;
 
 // Set true if testing shows X or Y must be inverted / swapped for this panel
 // orientation. Defaults assume native portrait-square, origin top-left.
@@ -40,12 +44,20 @@ static const bool TOUCH_INVERT_Y = false;
 static bool s_touch_present = false;
 
 // Probe the controller once. Best-effort: marks presence if the device ACKs.
+static bool touch_probe() {
+  for (uint8_t i = 0; i < sizeof(TOUCH_ADDRS); i++) {
+    Wire.beginTransmission(TOUCH_ADDRS[i]);
+    if (Wire.endTransmission() == 0) { TOUCH_ADDR = TOUCH_ADDRS[i]; return true; }
+  }
+  TOUCH_ADDR = 0;
+  return false;
+}
+
 inline void touch_begin() {
   // Wire is already begun by the panel expander on SDA=8/SCL=18; ensure it.
   Wire.begin(8, 18);
   Wire.setClock(400000);
-  Wire.beginTransmission(TOUCH_ADDR);
-  s_touch_present = (Wire.endTransmission() == 0);
+  s_touch_present = touch_probe();
 }
 
 // Read one touch point. Returns true and fills *x,*y (720x720 space) on a
@@ -57,8 +69,7 @@ inline bool touch_get(int16_t *x, int16_t *y) {
     static uint32_t next_probe = 0;
     if (millis() >= next_probe) {
       next_probe = millis() + 1000;
-      Wire.beginTransmission(TOUCH_ADDR);
-      s_touch_present = (Wire.endTransmission() == 0);
+      s_touch_present = touch_probe();
     }
     if (!s_touch_present) return false;
   }

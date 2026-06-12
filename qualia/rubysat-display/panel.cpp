@@ -9,8 +9,8 @@
 //   variant exactly) are provided so the sketch still builds under the generic
 //   esp32:esp32:esp32s3 FQBN.
 //
-// PANEL: TL040HDS20, 720x720, RGB-666, self-initializing -> Arduino_RGB_Display
-//        is constructed with NO init operation list.
+// PANEL: TL040WVS03, 480x480 4.0" square (ST7701-family: REQUIRES init seq)
+//        via the expander 9-bit SW-SPI: tl040wvs03_init_operations.
 
 #include "panel.h"
 #include <Wire.h>   // Wire.begin(8,18) in panel_begin() pins I2C for both FQBNs
@@ -84,11 +84,10 @@ bool panel_begin() {
       PCA_TFT_RESET, PCA_TFT_CS, PCA_TFT_SCK, PCA_TFT_MOSI,
       &Wire, 0x3F);
 
-  // 2) RGB panel: DE, VSYNC, HSYNC, PCLK, then R1..R5, G0..G5, B1..B5 (the
-  //    RGB666 panel's high bits wired to these GPIOs), then the verified sync
-  //    timings: hsync(pol,fp,pw,bp) = 1,46,2,44 ; vsync = 1,16,2,18.
-  //    (Adafruit's 480x480 example uses hsync fp=50; this 720x720 TL040HDS20
-  //    uses fp=46 per the task's verified timings.)
+  // 2) RGB panel — TL034WVS05 3.4" 480x480 square. Timings verbatim from
+  //    Adafruit_CircuitPython_Qualia displays/square34.py: freq 16 MHz,
+  //    hsync pw=20 fp=40 bp=40, vsync pw=10 fp=40 bp=40, all idle/active
+  //    flags False (=> polarity 0, pclk_active_neg 1).
   rgbpanel = new Arduino_ESP32RGBPanel(
       TFT_DE, TFT_VSYNC, TFT_HSYNC, TFT_PCLK,
       TFT_R1, TFT_R2, TFT_R3, TFT_R4, TFT_R5,
@@ -96,19 +95,17 @@ bool panel_begin() {
       TFT_B1, TFT_B2, TFT_B3, TFT_B4, TFT_B5,
       1 /* hsync_polarity */, 46 /* hsync_front_porch */,
       2 /* hsync_pulse_width */, 44 /* hsync_back_porch */,
-      1 /* vsync_polarity */, 16 /* vsync_front_porch */,
-      2 /* vsync_pulse_width */, 18 /* vsync_back_porch */,
-      1 /* pclk_active_neg (pclk active-high = false) */,
-      16000000 /* prefer_speed = 16 MHz */);
+      1 /* vsync_polarity */, 50 /* vsync_front_porch */,
+      16 /* vsync_pulse_width */, 16 /* vsync_back_porch */);
+      // pclk/speed: library defaults — exactly Adafruit's Qualia_S3_Product_Demo.
 
-  // 3) RGB display: 720x720, rotation 0, auto_flush, the expander passed as the
-  //    DataBus (panel-control) handle, rst = GFX_NOT_DEFINED (reset is gated by
-  //    the expander), and NO init operations (self-initializing panel).
-  //    Signature: (w,h,rgbpanel,r,auto_flush,bus,rst,init_ops,init_ops_len,...)
+  // 3) RGB display: 480x480; the ST7701-family controller on this panel NEEDS
+  //    its init sequence, clocked out via the expander's 9-bit SW-SPI
+  //    (converted from square34.py -> panel_init_tl034.h).
   gfx = new Arduino_RGB_Display(
-      720, 720, rgbpanel, 0 /* rotation */, true /* auto_flush */,
+      480, 480, rgbpanel, 0 /* rotation */, true /* auto_flush */,
       xpdr /* bus = I/O expander */, GFX_NOT_DEFINED /* rst via expander */,
-      nullptr /* init_operations = none */, 0 /* init_operations_len */);
+      tl040wvs03_init_operations, sizeof(tl040wvs03_init_operations));
 
   if (!gfx->begin()) {
     return false;
