@@ -33,10 +33,19 @@ class Publisher:
         self.cmd_path = os.path.join(shm_dir, "cmd.json")
         self._last_cmd_mtime = 0.0
         self._last_log = 0.0
+        self._ensure_dir()
+
+    def _ensure_dir(self) -> bool:
+        """Make sure the shm dir exists. /dev/shm is tmpfs and Debian's
+        systemd-tmpfiles-clean can sweep it out from under a long-running
+        service, so this is called before every write (mkdir on an existing
+        dir is a cheap stat). Returns True if the dir is present."""
         try:
-            os.makedirs(shm_dir, exist_ok=True)
+            os.makedirs(self.dir, exist_ok=True)
+            return True
         except Exception as exc:
-            self._log("mkdir %s failed: %s" % (shm_dir, exc))
+            self._log("mkdir %s failed: %s" % (self.dir, exc))
+            return False
 
     # --- logging -----------------------------------------------------------
     def _log(self, msg: str) -> None:
@@ -55,6 +64,7 @@ class Publisher:
         """Encode the RGB array as JPEG q80 and atomically replace frame.jpg.
         Returns True on success. Never raises."""
         try:
+            self._ensure_dir()
             arr = np.ascontiguousarray(rgb800x450)[:, :, :3].astype(np.uint8)
             img = Image.fromarray(arr, "RGB")
             if img.size != (800, 450):
@@ -81,6 +91,7 @@ class Publisher:
     def write_status(self, status: dict) -> bool:
         """Atomically replace status.json with the given dict. Never raises."""
         try:
+            self._ensure_dir()
             # default=float coerces stray numpy scalars (np.float32, etc.) to a
             # plain number instead of raising TypeError -- a single un-cast value
             # must NOT take the whole status channel dark (HUD would show OFFLINE

@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.1.1 — 2026-06-11
+- Vision: publisher self-heals /dev/shm/rubyvision dir before each write
+  (survives Debian tmpfiles cleanup of tmpfs that broke the service mid-run).
+
 ## v3.1.0 — 2026-06-11
 - Self-update system: on-device updater (check/apply/rollback) from the touchscreen,
   A/B release worktrees + atomic symlink flip, three-layer crash auto-rollback,
