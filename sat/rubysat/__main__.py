@@ -14,8 +14,15 @@ Loop each tick:
   2. read cached vision status (never raises),
   3. read SoC temperature,
   4. build_state() -> JSON line, broadcast() to all clients,
-  5. drain inbound CMD lines and log them (wiring them back into rubyhud is a
-     FUTURE step; v1 only logs).
+  5. drain inbound CMD lines: allowlisted ruby_* control verbs are mapped to
+     ruby-updated queue commands (via rubyhud.updates.request, with a
+     self-contained atomic-write fallback when rubyhud is not importable);
+     everything else (page_prev / page_next / tap, junk) stays log-only.
+
+After a verb is handled, a transient "ack" key ("<verb>:sent|failed") rides
+along in STATE lines for ~ACK_TTL_S seconds, then is dropped again. Old
+clients that don't know the key simply ignore it (schema is otherwise
+unchanged).
 
 A heartbeat guarantees >= 2 Hz output even if the publish rate is set lower.
 SIGTERM / SIGINT shut the loop and server down cleanly.
@@ -44,6 +51,25 @@ VISION_STATUS_PATH = "/dev/shm/rubyvision/status.json"
 # healthy-but-quiet bus.
 HEARTBEAT_HZ = 2.0
 SOC_TEMP_PATH = "/sys/class/thermal/thermal_zone0/temp"
+
+# ---- Qualia control verbs -------------------------------------------------- #
+# Allowlist: Qualia menu verb -> (ruby-updated queue cmd, ref). The queue cmds
+# are the ones allowlisted by the root updater's path unit. Anything not in
+# this map (page_prev / page_next / tap, junk) keeps v1 log-only behavior.
+VERB_MAP = {
+    "ruby_check": ("check", None),
+    "ruby_update": ("apply", None),
+    "ruby_rollback": ("rollback", None),
+    "ruby_restart_hud": ("restart-hud", None),
+    "ruby_switch_dash": ("switch-dash", None),
+}
+# How long a verb ack ("<verb>:sent|failed") rides along in STATE lines.
+ACK_TTL_S = 3.0
+# Fallback queue location when rubyhud.updates is not importable. Honors the
+# same env override as rubyhud.updates so bench tests can point it at a tmpdir.
+_UPDATE_DIR_DEFAULT = "/run/ruby-update"
+# Bound per-command log line length (inbound CMD json is client-controlled).
+_LOG_CMD_MAX = 200
 
 
 def _log(msg: str) -> None:
@@ -98,6 +124,108 @@ class _VisionCache:
             # build_state() will eventually fall back to "off".
             pass
         return self._cached
+
+
+def _queue_update_request(cmd: str, ref=None) -> bool:
+    """Queue an updater command for ruby-updated. Returns True when queued.
+    NEVER raises.
+
+    Prefers rubyhud.updates.request() (the canonical writer; import guarded at
+    use-site). When rubyhud is not importable (build host, broken install) it
+    falls back to a self-contained atomic write of {"cmd":...[,"ref":...],
+    "ts":...} into <update-dir>/queue: mkstemp in-dir with a DOT-PREFIXED temp
+    name (the path unit's *.req glob must never fire on a half-written file)
+    then os.replace() into the final *.req name."""
+    try:
+        try:
+            from rubyhud import updates
+        except Exception:
+            updates = None
+        if updates is not None:
+            return bool(updates.request(cmd, ref))
+
+        # ---- self-contained fallback (no rubyhud on this host) ---- #
+        import tempfile
+        qdir = os.path.join(
+            os.environ.get("RUBYHUD_UPDATE_DIR", _UPDATE_DIR_DEFAULT), "queue")
+        payload = {"cmd": str(cmd)}
+        if ref:
+            payload["ref"] = str(ref)
+        payload["ts"] = round(time.time(), 3)
+        fd, tmp = tempfile.mkstemp(prefix=".req-", dir=qdir)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(payload) + "\n")
+            dst = os.path.join(qdir, "%d-%d.req"
+                               % (time.time_ns() // 1000000, os.getpid()))
+            os.replace(tmp, dst)
+            return True
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            return False
+    except Exception:
+        return False
+
+
+_REMOTE_CMD_PATH = "/dev/shm/rubyhud-remote.json"
+_remote_seq = [0]
+
+
+def _forward_hud_page(cmd: str) -> None:
+    """Bridge satellite page buttons to the local rubyhud page rotation.
+
+    Atomic write of {"seq", "cmd", "ts"} to /dev/shm/rubyhud-remote.json;
+    rubyhud's main loop consumes it (mtime + seq gated). Never raises."""
+    try:
+        import json as _json
+        import tempfile as _tf
+        _remote_seq[0] += 1
+        payload = _json.dumps({"seq": _remote_seq[0], "cmd": cmd,
+                               "ts": round(time.time(), 3)})
+        d = os.path.dirname(_REMOTE_CMD_PATH)
+        fd, tmp = _tf.mkstemp(prefix=".rhr-", dir=d)
+        try:
+            os.write(fd, payload.encode("ascii"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, _REMOTE_CMD_PATH)
+    except Exception:
+        pass
+
+
+def _handle_command(cmd, ack: dict) -> None:
+    """Route one inbound Qualia CMD dict. NEVER raises; logging is bounded.
+
+    Allowlisted ruby_* verbs queue an updater request and arm a transient ack
+    ("<verb>:sent|failed") that the publish loop attaches to STATE lines for
+    ACK_TTL_S seconds. Everything else (page_prev / page_next / tap, unknown
+    junk) keeps the v1 log-only behavior."""
+    try:
+        try:
+            line = json.dumps(cmd, separators=(",", ":"))
+        except Exception:
+            line = repr(cmd)
+        _log("CMD %s" % line[:_LOG_CMD_MAX])
+
+        verb = cmd.get("cmd") if isinstance(cmd, dict) else None
+        if verb in ("page_next", "page_prev"):
+            _forward_hud_page(verb)
+            return
+        mapped = VERB_MAP.get(verb) if isinstance(verb, str) else None
+        if mapped is None:
+            return  # log-only: taps and anything not allowlisted
+        ucmd, ref = mapped
+        ok = _queue_update_request(ucmd, ref)
+        result = "sent" if ok else "failed"
+        ack["text"] = "%s:%s" % (verb, result)
+        ack["until"] = time.monotonic() + ACK_TTL_S
+        _log("VERB %s -> updater %s: %s" % (verb, ucmd, result))
+    except Exception:
+        # A misbehaving client must never take the publish loop down.
+        pass
 
 
 def _make_snapshot_source(channel: str, novehicle: bool):
@@ -190,6 +318,9 @@ def main(argv=None) -> int:
 
     seq = 0
     last_emit = 0.0
+    # Transient verb ack: text rides in STATE lines until the monotonic
+    # deadline passes, then the key is dropped (schema stays compatible).
+    ack = {"text": None, "until": 0.0}
     try:
         while not stop["flag"]:
             now = time.monotonic()
@@ -213,6 +344,11 @@ def main(argv=None) -> int:
             t = time.time()
             try:
                 state = build_state(snap, vstatus, soc, seq, t)
+                if ack["text"] is not None:
+                    if now < ack["until"]:
+                        state["ack"] = ack["text"]
+                    else:
+                        ack["text"] = None  # TTL expired: drop the key again
                 line = json.dumps(state, separators=(",", ":"))
             except Exception as exc:
                 _log("build_state failed: %s" % exc)
@@ -223,9 +359,10 @@ def main(argv=None) -> int:
             seq += 1
             last_emit = now
 
-            # Drain + log inbound CMD lines (FUTURE: route into rubyhud).
+            # Drain inbound CMD lines: ruby_* verbs map to updater requests
+            # (+ ack); page_prev/page_next/tap and unknowns stay log-only.
             for cmd in server.commands():
-                _log("CMD %s" % json.dumps(cmd, separators=(",", ":")))
+                _handle_command(cmd, ack)
     finally:
         _log("rubysat shutting down")
         try:

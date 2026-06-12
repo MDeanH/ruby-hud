@@ -30,7 +30,7 @@
 #define RPM_REDLINE 6500
 
 // --- command plumbing ------------------------------------------------------ //
-char g_pending_cmd[16] = "";
+char g_pending_cmd[24] = "";
 int  g_pending_cmd_x = 0;
 int  g_pending_cmd_y = 0;
 
@@ -120,10 +120,10 @@ static void tapzone_cb(lv_event_t *e) {
   g_pending_cmd_y = p.y;
 }
 
-void ui_init() {
+void ui_init(lv_obj_t *parent) {
   make_styles();
 
-  scr = lv_scr_act();
+  scr = parent ? parent : lv_scr_act();
   lv_obj_set_style_bg_color(scr, C_BG, 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
@@ -217,20 +217,37 @@ void ui_init() {
   lv_obj_set_style_text_font(link_lbl, &lv_font_montserrat_22, 0);
   lv_obj_align(link_lbl, LV_ALIGN_TOP_MID, 18, 24);
 
-  // ---- invisible page tap-zones (left/right edges) ----
-  lv_obj_t *zl = lv_obj_create(scr);
-  lv_obj_remove_style_all(zl);
-  lv_obj_set_size(zl, 70, 360);
-  lv_obj_align(zl, LV_ALIGN_LEFT_MID, 0, 0);
-  lv_obj_add_flag(zl, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(zl, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_prev");
+  // ---- VISIBLE HUD-control buttons (bottom corners): flip the Pi HUD's
+  //      pages remotely. They emit page_prev/page_next CMDs which rubysat
+  //      bridges to rubyhud (/dev/shm/rubyhud-remote.json). Placed low and
+  //      small so they don't crowd the gauges; styled as chips.
+  lv_obj_t *bl = lv_btn_create(scr);
+  lv_obj_set_size(bl, 96, 52);
+  lv_obj_align(bl, LV_ALIGN_BOTTOM_LEFT, 8, -6);
+  lv_obj_set_style_bg_color(bl, C_PANEL, 0);
+  lv_obj_set_style_border_color(bl, C_ACCENT, 0);
+  lv_obj_set_style_border_width(bl, 1, 0);
+  lv_obj_set_style_radius(bl, 12, 0);
+  lv_obj_add_event_cb(bl, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_prev");
+  lv_obj_t *bll = lv_label_create(bl);
+  lv_label_set_text(bll, "< HUD");
+  lv_obj_set_style_text_color(bll, C_TEXT, 0);
+  lv_obj_set_style_text_font(bll, &lv_font_montserrat_18, 0);
+  lv_obj_center(bll);
 
-  lv_obj_t *zr = lv_obj_create(scr);
-  lv_obj_remove_style_all(zr);
-  lv_obj_set_size(zr, 70, 360);
-  lv_obj_align(zr, LV_ALIGN_RIGHT_MID, 0, 0);
-  lv_obj_add_flag(zr, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(zr, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_next");
+  lv_obj_t *br = lv_btn_create(scr);
+  lv_obj_set_size(br, 96, 52);
+  lv_obj_align(br, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
+  lv_obj_set_style_bg_color(br, C_PANEL, 0);
+  lv_obj_set_style_border_color(br, C_ACCENT, 0);
+  lv_obj_set_style_border_width(br, 1, 0);
+  lv_obj_set_style_radius(br, 12, 0);
+  lv_obj_add_event_cb(br, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_next");
+  lv_obj_t *brl = lv_label_create(br);
+  lv_label_set_text(brl, "HUD >");
+  lv_obj_set_style_text_color(brl, C_TEXT, 0);
+  lv_obj_set_style_text_font(brl, &lv_font_montserrat_18, 0);
+  lv_obj_center(brl);
 }
 
 // --- helpers --------------------------------------------------------------- //

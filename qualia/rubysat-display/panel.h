@@ -34,4 +34,8 @@ extern Arduino_RGB_Display   *gfx;
 // Leaves `gfx` ready to draw. Returns true on success.
 bool panel_begin();
 
+// Backlight control via the TCA9554 expander (menu "backlight test" + HUD
+// mirror dimming later).
+void panel_backlight(bool on);
+
 #endif  // RUBYSAT_PANEL_H

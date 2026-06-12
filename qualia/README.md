@@ -40,10 +40,37 @@ from **Adafruit's standard Arduino_GFX Qualia S3 example** and live in
    "fuel":<int|null>,"bus":"<UP|NO BUS|ERROR>","canfps":<int>,
    "vsrc":"<csi|usb|video|pattern|off>","vdets":<int>,"soc":<float|null>}
   ```
+  An optional `"ack"` key may additionally appear for ~3 s after a control
+  verb is handled (see below). Clients must tolerate it being absent and
+  ignore unknown keys.
 - **Qualia → Ruby** CMD line on touch:
   ```json
   {"cmd":"<page_next|page_prev|tap>","x":<int>,"y":<int>}
   ```
+
+### Control verbs + ack (Ruby-side `rubysat`)
+
+The menu page can send **control verbs** as CMD lines (`{"cmd":"<verb>", ...}`).
+`rubysat` allowlists exactly these and maps them to `ruby-updated` queue
+commands (queued via `rubyhud.updates.request()`, with a self-contained
+atomic queue-write fallback; the root updater enforces its own allowlist):
+
+| Verb (Qualia -> Ruby) | Updater command | Effect |
+|----------------------|-----------------|--------|
+| `ruby_check`         | `check`         | check for updates |
+| `ruby_update`        | `apply`         | apply latest update |
+| `ruby_rollback`      | `rollback`      | roll back to previous version |
+| `ruby_restart_hud`   | `restart-hud`   | restart the HUD service |
+| `ruby_switch_dash`   | `switch-dash`   | switch to the console dash |
+
+Any other `cmd` (including `page_prev` / `page_next` / `tap`) is logged and
+ignored on the Pi.
+
+**Ack protocol:** after handling a verb, `rubysat` attaches a transient
+`"ack":"<verb>:sent"` (queued OK) or `"ack":"<verb>:failed"` (queue write
+failed) to every STATE line for ~3 s, then drops the key. The schema stays
+backward compatible -- the key is simply absent most of the time, and old
+servers never send it.
 
 The firmware tolerates partial lines, ignores malformed JSON, and treats any
 field as null via sentinels (`--` shown on screen). If no STATE arrives for >2s

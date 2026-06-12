@@ -124,3 +124,7 @@ bool panel_begin() {
   gfx->fillScreen(0x0000);
   return true;
 }
+
+void panel_backlight(bool on) {
+  if (xpdr) xpdr->digitalWrite(PCA_TFT_BACKLIGHT, on ? HIGH : LOW);
+}

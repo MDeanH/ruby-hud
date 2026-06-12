@@ -20,10 +20,19 @@
 #include <WiFiClient.h>
 #include <ArduinoJson.h>
 
+#include <Preferences.h>
 #include "secrets.h"
 #include "panel.h"      // gfx panel + Qualia expander bring-up
-#include "touch.h"      // cap-touch 0x48 best-effort driver
+#include "touch.h"      // cap-touch best-effort driver
 #include "ui.h"         // LVGL gauge UI (build + setters)
+#include "menu_ui.h"    // STATUS + MENU tiles (submenus, verbs, toasts)
+
+// menu_ui.cpp hooks
+void net_force_reconnect();
+void panel_backlight(bool on);
+void display_set_rotated(bool rot180);
+bool display_is_rotated();
+void menu_ui_tick();
 
 // Forward declarations (the .ino is one translation unit; declare before use so
 // ordering / custom-type signatures never depend on the IDE's auto-prototyper).
@@ -101,6 +110,40 @@ static uint32_t connect_backoff = 500;    // ms, grows to a cap
 static const uint32_t BACKOFF_MAX = 8000;
 
 static String rxbuf;                      // partial-line accumulator
+
+// --------------------------------------------------------------------------- //
+// Tileview (3 swipeable pages) + rotation persistence + RX-rate accounting
+// --------------------------------------------------------------------------- //
+static lv_obj_t *g_tileview = nullptr;
+static lv_obj_t *g_dots[3] = {nullptr, nullptr, nullptr};
+static Preferences g_prefs;
+static bool g_rot180 = false;
+static uint32_t g_rx_lines = 0;        // STATE lines since last rate sample
+static float    g_rx_rate = 0.f;
+static uint32_t g_rate_t = 0;
+static uint32_t g_status_t = 0;
+
+bool display_is_rotated() { return g_rot180; }
+void display_set_rotated(bool rot180) {
+  g_rot180 = rot180;
+  g_prefs.putUChar("rot180", rot180 ? 1 : 0);
+  lv_disp_set_rotation(lv_disp_get_default(),
+                       rot180 ? LV_DISP_ROT_180 : LV_DISP_ROT_NONE);
+}
+void net_force_reconnect();   // defined below near net_pump
+
+static void dots_update(lv_event_t *e) {
+  (void)e;
+  if (!g_tileview) return;
+  lv_obj_t *act = lv_tileview_get_tile_act(g_tileview);
+  int idx = 0;
+  if (act) idx = lv_obj_get_index(act);
+  for (int i = 0; i < 3; i++) {
+    if (g_dots[i])
+      lv_obj_set_style_bg_color(g_dots[i],
+          (i == idx) ? lv_color_hex(0xd0273b) : lv_color_hex(0x2a3340), 0);
+  }
+}
 
 // --------------------------------------------------------------------------- //
 // WiFi
@@ -233,9 +276,37 @@ static void handle_state_line(const String &line) {
   ui_update(s);
   last_state_ms = millis();
   ui_set_link(true);
+  g_rx_lines++;
+
+  // Optional verb ack riding the STATE stream -> toast + ABOUT row.
+  const char *ack = doc["ack"] | "";
+  if (ack[0]) menu_ui_set_ack(ack);
+
+  // ~1 Hz: refresh STATUS tile values + RX rate.
+  uint32_t now = millis();
+  if (now - g_status_t > 1000) {
+    g_status_t = now;
+    if (now - g_rate_t >= 1000) {
+      g_rx_rate = g_rx_lines * 1000.0f / (float)(now - g_rate_t);
+      g_rx_lines = 0; g_rate_t = now;
+    }
+    menu_ui_set_state(s.bus, s.canfps, s.vsrc, s.vdets, s.soc,
+                      (millis() - last_state_ms) < 2000);
+    menu_ui_set_net(WiFi.SSID().c_str(),
+                    WiFi.localIP().toString().c_str(),
+                    have_ruby_ip ? ruby_ip.toString().c_str() : "--",
+                    WiFi.RSSI(), g_rx_rate);
+  }
 }
 
 // Emit a CMD line on touch. Non-blocking write; drops if socket is busy/down.
+void net_force_reconnect() {
+  if (sock.connected()) sock.stop();
+  have_ruby_ip = false;          // re-resolve (IP may have moved)
+  connect_backoff = 500;
+  last_connect_try = 0;
+}
+
 static void send_cmd(const char *cmd, int x, int y) {
   if (!sock.connected()) return;
   StaticJsonDocument<96> doc;
@@ -309,9 +380,41 @@ void setup() {
   timerAlarmEnable(lv_tick_timer);
 #endif
 
-  // 3) Build the gauge UI.
-  ui_init();
+  // 2b) Restore persisted rotation BEFORE building UI.
+  g_prefs.begin("rubysat", false);
+  g_rot180 = g_prefs.getUChar("rot180", 0) ? true : false;
+
+  // 3) Tileview: 3 horizontally-swipeable tiles (GAUGES / STATUS / MENU).
+  g_tileview = lv_tileview_create(lv_scr_act());
+  lv_obj_set_style_bg_color(g_tileview, lv_color_hex(0x07090c), 0);
+  lv_obj_set_scrollbar_mode(g_tileview, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_t *t_gauges = lv_tileview_add_tile(g_tileview, 0, 0, LV_DIR_RIGHT);
+  lv_obj_t *t_status = lv_tileview_add_tile(g_tileview, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+  lv_obj_t *t_menu   = lv_tileview_add_tile(g_tileview, 2, 0, LV_DIR_LEFT);
+  lv_obj_add_event_cb(g_tileview, dots_update, LV_EVENT_VALUE_CHANGED, nullptr);
+
+  // GAUGES tile: existing cluster, reparented into the tile.
+  ui_init(t_gauges);
   ui_set_link(false);
+
+  // STATUS + MENU tiles.
+  menu_ui_init(t_status, t_menu);
+
+  // Floating page dots on the top layer (visible across all tiles).
+  for (int i = 0; i < 3; i++) {
+    g_dots[i] = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(g_dots[i]);
+    lv_obj_set_size(g_dots[i], 12, 12);
+    lv_obj_set_style_radius(g_dots[i], LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(g_dots[i], LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(g_dots[i],
+        (i == 0) ? lv_color_hex(0xd0273b) : lv_color_hex(0x2a3340), 0);
+    lv_obj_align(g_dots[i], LV_ALIGN_BOTTOM_MID, (i - 1) * 22, -8);
+  }
+
+  // Apply persisted rotation now that a display exists.
+  if (g_rot180)
+    lv_disp_set_rotation(lv_disp_get_default(), LV_DISP_ROT_180);
 
   // 4) WiFi.
   wifi_begin();
@@ -350,6 +453,9 @@ void loop() {
     g_touch_event = false;
     send_cmd("tap", g_last_touch_x, g_last_touch_y);
   }
+
+  // g) expire menu toasts.
+  menu_ui_tick();
 
   // Small yield; LVGL refresh is timer-driven so this just paces the loop.
   delay(2);

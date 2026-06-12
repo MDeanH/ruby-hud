@@ -102,6 +102,39 @@ def _error_frame():
     return img
 
 
+_REMOTE_CMD = "/dev/shm/rubyhud-remote.json"
+
+
+def _apply_remote(ui, state) -> None:
+    """Consume satellite commands (written by rubysat) — page flips for now.
+
+    File: /dev/shm/rubyhud-remote.json {"seq": int, "cmd": "page_next"|...}.
+    mtime-gated, seq-deduped, never raises."""
+    try:
+        st = os.stat(_REMOTE_CMD)
+    except OSError:
+        return
+    if st.st_mtime_ns == state.get("remote_mtime"):
+        return
+    state["remote_mtime"] = st.st_mtime_ns
+    try:
+        import json
+        with open(_REMOTE_CMD) as fh:
+            doc = json.load(fh)
+        seq = int(doc.get("seq", 0))
+        if seq == state.get("remote_seq"):
+            return
+        state["remote_seq"] = seq
+        cmd = str(doc.get("cmd", ""))
+        n = len(ui["pages"])
+        if cmd == "page_next":
+            ui["page_idx"] = (ui["page_idx"] + 1) % n
+        elif cmd == "page_prev":
+            ui["page_idx"] = (ui["page_idx"] - 1) % n
+    except Exception:
+        pass
+
+
 def _apply_touch(ui, touch, pages, state) -> None:
     """Drain gestures and mutate ui (page_idx wraps; tap_fx for feedback)."""
     n = len(pages)
@@ -184,6 +217,7 @@ def _normal() -> int:
         while not runner.stop:
             t0 = time.monotonic()
             _apply_touch(ui, touch, pages, state)
+            _apply_remote(ui, state)
             try:
                 snap = dl.snapshot()
                 img = compose_frame(snap, W, H, ui)
