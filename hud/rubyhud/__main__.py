@@ -1,4 +1,3 @@
-raise RuntimeError("crash drill v3.1.2 - deliberate")
 """rubyhud entrypoint.
 
 Modes (via env):
