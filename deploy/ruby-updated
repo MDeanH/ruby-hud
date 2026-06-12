@@ -235,6 +235,10 @@ self_install() {  # <release-dir>: refresh handler + unit files from release
     # takes effect. It is independent of the watched rubyhud restart and must
     # never block or fail the apply.
     systemctl try-restart rubyvision >/dev/null 2>&1 || true
+    # rubysat imports the new release via the venv editable/.pth that setup-sat.sh
+    # just re-pinned; restart it (only if already running) so it picks up the new
+    # release's rubysat/rubyhud code. Same non-blocking, never-fail contract.
+    systemctl try-restart rubysat >/dev/null 2>&1 || true
     return 0
 }
 

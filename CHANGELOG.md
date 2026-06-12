@@ -2,6 +2,13 @@
 
 ## v3.1.2 — 2026-06-11
 
+## v3.2.0 — 2026-06-11
+- satellite: rubysat TCP state-publisher (Ruby) + Qualia ESP32-S3 LVGL firmware
+  (Build B smart client). Ruby feeds live vehicle state; Qualia renders gauges
+  locally, cap-touch sends commands back.
+- vision: yolov8m_h10 HEF wired (real Hailo object detection, not stub).
+
+
 ## v3.1.3 — 2026-06-11
 - vision: fix CSI camera red cast (picamera2 RGB888 is BGR byte order -> swap to RGB).
 

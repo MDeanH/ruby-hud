@@ -1,0 +1,356 @@
+// rubysat-display.ino — Ruby "rubysat" satellite gauge display
+// Board : Adafruit Qualia ESP32-S3 (8MB octal PSRAM)
+// Panel : TL040HDS20, 720x720 4" square, RGB-666 dot-clock (self-initializing,
+//         no panel command sequence — bring-up is just the I/O-expander reset).
+// UI    : LVGL v8 gauges rendered LOCALLY; live state arrives over TCP from the
+//         Ruby Pi (rubysat server, port 7878, newline-delimited JSON).
+// Touch : cap-touch at I2C 0x48 (best-effort FT5x06-class driver; see touch.h).
+//
+// Pin map + I/O-expander panel bring-up are taken VERBATIM from the standard
+// Adafruit Qualia S3 Arduino_GFX example ("Qualia_S3_RGB666" / the Adafruit
+// learn-guide example). See the citation block in panel.h.
+//
+// Build/flash: see qualia/README.md. Compile-unverified in this environment
+// (no ESP32 core / no board attached) — author reviewed by hand.
+
+#include <Arduino_GFX_Library.h>
+#include <lvgl.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
+
+#include "secrets.h"
+#include "panel.h"      // gfx panel + Qualia expander bring-up
+#include "touch.h"      // cap-touch 0x48 best-effort driver
+#include "ui.h"         // LVGL gauge UI (build + setters)
+
+// Forward declarations (the .ino is one translation unit; declare before use so
+// ordering / custom-type signatures never depend on the IDE's auto-prototyper).
+static void handle_state_line(const String &line);
+static void send_cmd(const char *cmd, int x, int y);
+
+// --------------------------------------------------------------------------- //
+// LVGL display plumbing
+// --------------------------------------------------------------------------- //
+// Partial draw buffer in PSRAM. 720 wide * N lines * 2 bytes (RGB565). A buffer
+// of ~1/10th the screen (72 lines) keeps RAM modest while flushing fast. LVGL
+// v8 single-buffer partial render is plenty for these gauges.
+static const uint32_t SCREEN_W = 720;
+static const uint32_t SCREEN_H = 720;
+static const uint32_t DRAW_LINES = 72;                  // buffer height in px
+static const uint32_t DRAW_BUF_PX = SCREEN_W * DRAW_LINES;
+
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t *buf1 = nullptr;                      // allocated in PSRAM
+
+// Flush callback: push the rendered region to the RGB panel. Arduino_GFX's
+// draw16bitRGBBitmap takes RGB565 which matches LV_COLOR_DEPTH 16.
+static void disp_flush(lv_disp_drv_t *drv, const lv_area_t *area,
+                       lv_color_t *color_p) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+  gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)color_p, w, h);
+  lv_disp_flush_ready(drv);
+}
+
+// LVGL touch read callback: map the 0x48 cap-touch to 720x720. We edge-detect
+// the press here so the loop emits exactly one "tap" CMD per finger-down, not
+// one per ~30ms poll while the finger is held.
+static bool s_touch_down = false;        // last-poll pressed state
+// Touch -> CMD plumbing (declared before touch_read; the auto-prototyper
+// hoists functions but not globals).
+volatile bool g_touch_event = false;
+volatile int16_t g_last_touch_x = 0;
+volatile int16_t g_last_touch_y = 0;
+static void touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+  int16_t tx, ty;
+  if (touch_get(&tx, &ty)) {
+    data->state = LV_INDEV_STATE_PRESSED;
+    data->point.x = tx;
+    data->point.y = ty;
+    if (!s_touch_down) {                 // rising edge only
+      g_last_touch_x = tx;
+      g_last_touch_y = ty;
+      g_touch_event = true;
+    }
+    s_touch_down = true;
+  } else {
+    data->state = LV_INDEV_STATE_RELEASED;
+    s_touch_down = false;
+  }
+}
+
+// LVGL v8 needs a millisecond tick. Drive it from a hardware timer so timing
+// stays correct even when loop() is briefly busy with WiFi/TCP. The ESP32
+// timer API differs between Arduino core 2.x and 3.x; both are handled in
+// setup() under ESP_ARDUINO_VERSION_MAJOR.
+static hw_timer_t *lv_tick_timer = nullptr;
+static void ARDUINO_ISR_ATTR on_lv_tick() { lv_tick_inc(1); }
+
+// --------------------------------------------------------------------------- //
+// Network state
+// --------------------------------------------------------------------------- //
+static WiFiClient sock;
+static IPAddress ruby_ip;
+static bool have_ruby_ip = false;
+
+static uint32_t last_state_ms = 0;        // last STATE line received
+static uint32_t last_connect_try = 0;     // backoff clock
+static uint32_t connect_backoff = 500;    // ms, grows to a cap
+static const uint32_t BACKOFF_MAX = 8000;
+
+static String rxbuf;                      // partial-line accumulator
+
+// --------------------------------------------------------------------------- //
+// WiFi
+// --------------------------------------------------------------------------- //
+static void wifi_begin() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);                   // latency over power here
+  // Try primary creds; the ESP32 core will also remember/roam. We attempt the
+  // hotspot SSID as a fallback if the primary never associates.
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+// Non-blocking: returns true once associated. Round-robins primary <-> SSID2
+// every ~12s so the device can recover whichever network appears -- e.g. it
+// boots near the hotspot but the home AP comes up later, or vice-versa. (The
+// old code latched on SSID2 once and was then stuck retrying only SSID2 until
+// reboot.)
+static bool wifi_pump() {
+  static uint32_t started = 0;
+  static bool on_secondary = false;
+  if (WiFi.status() == WL_CONNECTED) return true;
+
+  uint32_t now = millis();
+  if (started == 0) started = now;
+
+  // Every 12s with no link, switch to the other credential set (if SSID2 is
+  // configured) and retry. With no SSID2 we just keep retrying the primary.
+  if ((now - started) > 12000) {
+    if (strlen(WIFI_SSID2) > 0) {
+      on_secondary = !on_secondary;
+      if (on_secondary) WiFi.begin(WIFI_SSID2, WIFI_PASS2);
+      else              WiFi.begin(WIFI_SSID, WIFI_PASS);
+    } else {
+      WiFi.begin(WIFI_SSID, WIFI_PASS);  // re-kick the primary
+    }
+    started = now;
+  }
+  return false;
+}
+
+// Resolve ruby.local via mDNS; fall back to RUBY_FALLBACK_IP. Cheap to re-call.
+static void resolve_ruby() {
+  if (have_ruby_ip) return;
+  // mDNS must be (re)started after WiFi is up.
+  static bool mdns_up = false;
+  if (!mdns_up) {
+    if (MDNS.begin("rubysat")) mdns_up = true;
+  }
+  if (mdns_up) {
+    IPAddress ip = MDNS.queryHost("ruby");      // "ruby.local"
+    if (ip != IPAddress((uint32_t)0)) {
+      ruby_ip = ip;
+      have_ruby_ip = true;
+      return;
+    }
+  }
+  // Fallback static IP from secrets.h.
+  if (ruby_ip.fromString(RUBY_FALLBACK_IP)) {
+    have_ruby_ip = true;
+  }
+}
+
+// Non-blocking TCP connect with exponential backoff.
+static void net_pump() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (sock.connected()) sock.stop();
+    return;
+  }
+
+  if (!sock.connected()) {
+    ui_set_link(false);                         // red chip while down
+    uint32_t now = millis();
+    if (now - last_connect_try < connect_backoff) return;
+    last_connect_try = now;
+
+    resolve_ruby();
+    if (!have_ruby_ip) return;
+
+    // connect() with a short timeout so we never block the gauge loop. The
+    // ESP32 WiFiClient.connect(timeout_ms) overload is used.
+    if (sock.connect(ruby_ip, RUBY_PORT, 1500)) {
+      sock.setNoDelay(true);
+      connect_backoff = 500;                    // reset backoff on success
+      rxbuf = "";
+    } else {
+      // grow backoff, and let mDNS re-resolve next time in case the IP moved
+      have_ruby_ip = false;
+      connect_backoff *= 2;
+      if (connect_backoff > BACKOFF_MAX) connect_backoff = BACKOFF_MAX;
+    }
+    return;
+  }
+
+  // Connected: drain available bytes, split on '\n', parse each line.
+  while (sock.available() > 0) {
+    char c = (char)sock.read();
+    if (c == '\n') {
+      handle_state_line(rxbuf);
+      rxbuf = "";
+    } else if (c != '\r') {
+      if (rxbuf.length() < 1024) rxbuf += c;    // guard against runaway lines
+      else rxbuf = "";                          // drop pathological line
+    }
+  }
+}
+
+// Parse a STATE JSON line and push values into the UI.
+static void handle_state_line(const String &line) {
+  if (line.length() < 2) return;                // ignore blank/keepalive
+  StaticJsonDocument<768> doc;
+  DeserializationError err = deserializeJson(doc, line);
+  if (err) return;                              // tolerate junk silently
+
+  StateView s;
+  s.rpm      = doc["rpm"].isNull()      ? -1   : (int)doc["rpm"];
+  s.mph      = doc["mph"].isNull()      ? -1   : (int)doc["mph"];
+  // gear/bus/vsrc: copy into fixed buffers (no heap). `doc[k] | "default"`
+  // yields a const char* (the default applies when the key is missing/null).
+  strlcpy(s.gear, doc["gear"] | "-",      sizeof(s.gear));
+  s.coolant  = doc["coolant"].isNull()  ? -1000 : (int)doc["coolant"];
+  s.volts    = doc["volts"].isNull()    ? -1.0f : (float)doc["volts"];
+  s.throttle = doc["throttle"].isNull() ? -1   : (int)doc["throttle"];
+  s.fuel     = doc["fuel"].isNull()     ? -1   : (int)doc["fuel"];
+  strlcpy(s.bus,  doc["bus"]  | "NO BUS", sizeof(s.bus));
+  s.canfps   = doc["canfps"] | 0;
+  strlcpy(s.vsrc, doc["vsrc"] | "off",    sizeof(s.vsrc));
+  s.vdets    = doc["vdets"] | 0;
+  s.soc      = doc["soc"].isNull()      ? -1000.0f : (float)doc["soc"];
+
+  ui_update(s);
+  last_state_ms = millis();
+  ui_set_link(true);
+}
+
+// Emit a CMD line on touch. Non-blocking write; drops if socket is busy/down.
+static void send_cmd(const char *cmd, int x, int y) {
+  if (!sock.connected()) return;
+  StaticJsonDocument<96> doc;
+  doc["cmd"] = cmd;
+  doc["x"] = x;
+  doc["y"] = y;
+  char out[96];
+  size_t n = serializeJson(doc, out, sizeof(out));
+  if (n > 0 && n < sizeof(out) - 1) {
+    out[n] = '\n';
+    sock.write((const uint8_t *)out, n + 1);
+  }
+}
+
+// --------------------------------------------------------------------------- //
+// setup()
+// --------------------------------------------------------------------------- //
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println("[rubysat] boot");
+
+  // 1) Panel bring-up: Qualia I/O-expander reset sequence, then start the
+  //    RGB bus. panel_begin() also leaves `gfx` ready to draw.
+  if (!panel_begin()) {
+    Serial.println("[rubysat] PANEL INIT FAILED");
+    // Keep going — a black screen is still better than a hang, and serial logs
+    // will show the failure.
+  }
+  gfx->fillScreen(0x0000);
+
+  // 2) LVGL core init.
+  lv_init();
+
+  // Allocate the draw buffer in PSRAM (ps_malloc -> heap_caps_malloc OPI PSRAM).
+  buf1 = (lv_color_t *)ps_malloc(DRAW_BUF_PX * sizeof(lv_color_t));
+  if (buf1 == nullptr) {
+    Serial.println("[rubysat] PSRAM draw-buf alloc FAILED");
+    // Fall back to internal RAM (smaller); still functional, slower.
+    buf1 = (lv_color_t *)malloc(DRAW_BUF_PX * sizeof(lv_color_t));
+  }
+  lv_disp_draw_buf_init(&draw_buf, buf1, nullptr, DRAW_BUF_PX);
+
+  static lv_disp_drv_t disp_drv;
+  lv_disp_drv_init(&disp_drv);
+  disp_drv.hor_res = SCREEN_W;
+  disp_drv.ver_res = SCREEN_H;
+  disp_drv.flush_cb = disp_flush;
+  disp_drv.draw_buf = &draw_buf;
+  lv_disp_drv_register(&disp_drv);
+
+  // Touch input device.
+  touch_begin();
+  static lv_indev_drv_t indev_drv;
+  lv_indev_drv_init(&indev_drv);
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  indev_drv.read_cb = touch_read;
+  lv_indev_drv_register(&indev_drv);
+
+  // 1ms LVGL tick from a hardware timer. The Arduino-ESP32 timer API changed
+  // in core 3.x: timerBegin(freq) + timerAlarm(...), vs core 2.x's
+  // timerBegin(num, divider, countUp) + timerAlarmWrite/Enable.
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  lv_tick_timer = timerBegin(1000000);                 // 1MHz tick
+  timerAttachInterrupt(lv_tick_timer, &on_lv_tick);
+  timerAlarm(lv_tick_timer, 1000, true, 0);            // 1000us = 1ms, repeat
+#else
+  lv_tick_timer = timerBegin(0, 80, true);             // 80MHz/80 = 1MHz
+  timerAttachInterrupt(lv_tick_timer, &on_lv_tick, true);
+  timerAlarmWrite(lv_tick_timer, 1000, true);          // 1000us = 1ms
+  timerAlarmEnable(lv_tick_timer);
+#endif
+
+  // 3) Build the gauge UI.
+  ui_init();
+  ui_set_link(false);
+
+  // 4) WiFi.
+  wifi_begin();
+
+  Serial.println("[rubysat] setup done");
+}
+
+// --------------------------------------------------------------------------- //
+// loop()
+// --------------------------------------------------------------------------- //
+void loop() {
+  // a) WiFi association (non-blocking).
+  wifi_pump();
+
+  // b) TCP connect/receive (non-blocking).
+  net_pump();
+
+  // c) Staleness: if no STATE for >2s, flag link red even if socket is up.
+  if (millis() - last_state_ms > 2000) {
+    ui_set_link(false);
+  }
+
+  // e) LVGL service FIRST: this runs the indev read (touch_read) and dispatches
+  //    edge-zone LV_EVENT_CLICKED -> g_pending_cmd, all within this call.
+  lv_timer_handler();
+
+  // f) Touch -> CMD, consuming the gesture LVGL just processed. A page button
+  //    (edge zone) takes priority; if the same touch also set g_touch_event we
+  //    clear it so we don't also emit a stray "tap". A raw tap with no widget
+  //    emits "tap" + coordinates.
+  if (g_pending_cmd[0] != '\0') {
+    send_cmd(g_pending_cmd, g_pending_cmd_x, g_pending_cmd_y);
+    g_pending_cmd[0] = '\0';
+    g_touch_event = false;            // same physical touch — don't double-send
+  } else if (g_touch_event) {
+    g_touch_event = false;
+    send_cmd("tap", g_last_touch_x, g_last_touch_y);
+  }
+
+  // Small yield; LVGL refresh is timer-driven so this just paces the loop.
+  delay(2);
+}

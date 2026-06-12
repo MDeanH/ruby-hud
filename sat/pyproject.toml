@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rubysat"
+version = "0.1.0"
+description = "Ruby Pi STATE publisher -> Qualia ESP32-S3 LVGL satellite display (TCP broadcast, decoupled from the HUD renderer)."
+requires-python = ">=3.11"
+# NO hard dependencies: stdlib only. rubysat imports rubyhud (already installed
+# / on PYTHONPATH on the Pi) for live vehicle data, but if rubyhud is not
+# importable the service falls back to a self-contained demo snapshot so it
+# still serves. Run with --novehicle to force the bench path.
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["rubysat*"]

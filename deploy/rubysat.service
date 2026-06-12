@@ -1,0 +1,33 @@
+[Unit]
+Description=Ruby STATE publisher -> Qualia ESP32-S3 satellite (TCP 7878)
+After=network.target
+# Never enter the systemd start-rate-limiter: this service may legitimately
+# crash-loop while can0 is being brought up, and Restart=always must keep
+# retrying. StartLimitIntervalSec/StartLimitBurst are [Unit]-section directives
+# (ignored if placed under [Service]).
+StartLimitIntervalSec=0
+
+[Service]
+User=michael
+Group=michael
+# rubysat (and rubyhud) are made importable by deploy/setup-sat.sh, which the
+# OTA apply runs from the staged release on EVERY apply (via deploy/setup.sh),
+# re-pinning the venv editable install / rubysat.pth + rubyhud.pth to the new
+# active release before the symlink flip. That is the same release-relative
+# mechanism rubyvision already uses, and it tracks OTA updates correctly.
+#
+# We deliberately do NOT use PYTHONPATH=/home/michael/hud/../sat here: CPython
+# lexically normalizes each PYTHONPATH entry ("hud/.." -> "/home/michael")
+# BEFORE traversing the /home/michael/hud symlink, so the entry that lands in
+# sys.path is "/home/michael/sat" (nonexistent), NOT "<release>/sat" -- the unit
+# would crash-loop on "No module named rubysat" even though the literal path
+# stats fine. rubyhud is imported the same way (editable/.pth), so no PYTHONPATH
+# is needed for live vehicle data either.
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/michael/ruby-env/bin/python -m rubysat --channel can0 --port 7878 --hz 15
+Restart=always
+RestartSec=2
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

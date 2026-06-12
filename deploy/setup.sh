@@ -74,4 +74,17 @@ if [ -f "$HERE/setup-vision.sh" ]; then
     fi
 fi
 
+# 5. rubysat service deps: pin THIS release's rubysat (+ rubyhud) into ruby-env
+#    so the unit can import them without the broken PYTHONPATH symlink trick.
+#    Release-relative ($HERE), runs on every apply, re-pins to the new release
+#    before the symlink flip. setup-sat.sh fails hard if rubysat won't import,
+#    which aborts the apply rather than crash-looping the unit.
+if [ -f "$HERE/setup-sat.sh" ]; then
+    echo "setup: running setup-sat.sh"
+    if ! bash "$HERE/setup-sat.sh"; then
+        echo "SETUP_FAIL: setup-sat.sh" >&2
+        exit 1
+    fi
+fi
+
 echo SETUP_OK
