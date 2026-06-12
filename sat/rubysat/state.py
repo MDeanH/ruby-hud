@@ -138,6 +138,15 @@ def build_state(snapshot, vision_status, soc_temp, seq: int, t: float) -> dict:
     vsrc, vdets = _vision_fields(vision_status, t)
     soc = _opt_round1(soc_temp)
 
+    # ND1 RF extras (additive; pre-reflash Qualia clients ignore unknown keys).
+    ambient = _opt_int(g(snapshot, "ambient_c", None))
+    mapkpa = _opt_int(g(snapshot, "map_kpa", None))
+    roof = str(g(snapshot, "roof", "-") or "-")
+    turn = str(g(snapshot, "turn", "off") or "off")
+    lights = str(g(snapshot, "headlight", "off") or "off")
+    pbrake = bool(g(snapshot, "parking_brake", False))
+    rev = bool(g(snapshot, "reverse", False))
+
     return {
         "t": round(float(t), 3),
         "seq": int(seq),
@@ -153,4 +162,11 @@ def build_state(snapshot, vision_status, soc_temp, seq: int, t: float) -> dict:
         "vsrc": vsrc,
         "vdets": vdets,
         "soc": soc,
+        "ambient": ambient,
+        "map": mapkpa,
+        "roof": roof,
+        "turn": turn,
+        "lights": lights,
+        "pbrake": pbrake,
+        "rev": rev,
     }

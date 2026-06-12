@@ -212,7 +212,8 @@ def _draw_top_bar(draw, snap):
     gauges.status_chip(draw, x, 16 * SS, "TS " + ts.upper(), ts_col, scale=SS)
 
     cpu = snap.cpu_temp_c
-    cpu_txt = "CPU --" if cpu is None else "CPU %d" % int(round(cpu))
+    cpu_txt = ("CPU --" if cpu is None
+               else "CPU %d" % int(round(cpu * 9.0 / 5.0 + 32.0)))  # shown in F
     cfont = font(24 * SS, "bold")
     cw = gauges._text_size(draw, cpu_txt, cfont)[0]
     x -= cw + 26 * SS

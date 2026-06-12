@@ -374,7 +374,7 @@ void menu_ui_set_state(const char *bus, int canfps, const char *vsrc,
   }
   if (st_can)  { char b[48]; snprintf(b,48,"%s %dfps", bus?bus:"--", canfps); lv_label_set_text(st_can,b); }
   if (st_vis)  { char b[48]; snprintf(b,48,"%s %d", vsrc?vsrc:"--", vdets); lv_label_set_text(st_vis,b); }
-  if (st_soc)  { char b[48]; if (soc_c>0) snprintf(b,48,"%.0f C", soc_c); else snprintf(b,48,"--"); lv_label_set_text(st_soc,b); }
+  if (st_soc)  { char b[48]; if (soc_c>0) snprintf(b,48,"%.0f F", soc_c * 9.0f / 5.0f + 32.0f); else snprintf(b,48,"--"); lv_label_set_text(st_soc,b); }
 }
 
 void menu_ui_set_ack(const char *ack) {

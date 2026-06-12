@@ -271,7 +271,7 @@ void ui_update(const StateView &s) {
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     lv_bar_set_value(bar_cool, pct, LV_ANIM_OFF);
     static char cb[16];
-    snprintf(cb, sizeof(cb), "%dC", s.coolant);
+    snprintf(cb, sizeof(cb), "%dF", s.coolant * 9 / 5 + 32);  // display F
     lv_label_set_text(val_cool, cb);
     lv_obj_set_style_bg_color(bar_cool,
         (s.coolant > 110) ? C_DANGER : C_ACCENT, LV_PART_INDICATOR);
@@ -342,7 +342,7 @@ void ui_update(const StateView &s) {
   // SoC temp text.
   if (s.soc > -1000.0f) {
     static char sb[12];
-    snprintf(sb, sizeof(sb), "%dC", (int)(s.soc + 0.5f));
+    snprintf(sb, sizeof(sb), "%dF", (int)(s.soc * 9.0f / 5.0f + 32.5f));  // display F
     lv_label_set_text(link_lbl, sb);
     lv_obj_set_style_text_color(link_lbl,
         (s.soc > 80.0f) ? C_DANGER : C_DIM, 0);

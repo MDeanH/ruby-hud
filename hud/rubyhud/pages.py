@@ -33,6 +33,11 @@ from .theme import (ACCENT, ACCENT_GLOW, CARD_BORDER, CARD_EDGE, DANGER, OK,
 BG = theme.BG
 
 
+def _to_f(c):
+    """Display-layer C -> F. All internal state/thresholds stay Celsius."""
+    return c * 9.0 / 5.0 + 32.0
+
+
 class Page:
     """Base page: render the body; handle_* return True when consumed."""
 
@@ -98,7 +103,7 @@ class GaugesPage(Page):
         # Pill meter chrome.
         y, h, w = self.PILL_Y * SS, self.PILL_H * SS, self.PILL_W * SS
         specs = (
-            ("COOL", "C", self._coolant_markers(False)),
+            ("COOL", "F", self._coolant_markers(False)),
             ("VOLT", "V", self._volt_markers(False)),
             ("THR", "%", None),
         )
@@ -155,7 +160,7 @@ class GaugesPage(Page):
         y, h, w = self.PILL_Y * SS, self.PILL_H * SS, self.PILL_W * SS
 
         coolant = _num(snap.coolant_c)
-        cval = None if coolant is None else "%d" % int(round(coolant))
+        cval = None if coolant is None else "%d" % int(round(_to_f(coolant)))
         gauges.pill_fill(img, draw, self.PILL_XS[0] * SS, y, w, h,
                          _frac(snap.coolant_c, COOLANT_LO, COOLANT_HI),
                          cval, markers=self._coolant_markers(coolant),
@@ -185,7 +190,152 @@ class GaugesPage(Page):
 
 
 # --------------------------------------------------------------------------- #
-# Page 2: raw CAN traffic
+# Page 2: vehicle dashboard (every decoded ND1 RF signal at a glance)
+# --------------------------------------------------------------------------- #
+class VehiclePage(Page):
+    """Auto-surfaces the full live signal set decoded in signals._decode_mx5
+    for the 2017 ND1 MX-5 GT RF: a tile grid of numeric signals plus a chip
+    strip for the boolean/enum signals (RF roof, headlights, turn, parking
+    brake, reverse). Card chrome + titles are drawn once into the static
+    layer; only values/chips render per frame. Every value is guarded so a
+    missing/stale signal shows '--' rather than raising."""
+
+    name = "VEHICLE"
+
+    # 4-col x 2-row tile grid (screen px, pre-supersample).
+    TILE_W, TILE_H = 292, 188
+    GRID_X, GRID_Y = 32, 120
+    GAP_X, GAP_Y = 16, 12
+
+    # Bottom status-chip strip.
+    CHIP_Y = 548
+    CHIP_X = 32
+
+    # (title, unit) per tile, row-major; values supplied per frame by _value.
+    _TILES = (
+        ("SPEED", "MPH"), ("RPM", ""), ("GEAR", ""), ("COOLANT", "F"),
+        ("FUEL", "%"), ("THROTTLE", "%"), ("MAP", "kPa"), ("PI TEMP", "F"),
+    )
+
+    def _cells(self):
+        return [(self.GRID_X + c * (self.TILE_W + self.GAP_X),
+                 self.GRID_Y + r * (self.TILE_H + self.GAP_Y))
+                for r in range(2) for c in range(4)]
+
+    # ---- static chrome ---------------------------------------------------
+    def render_static(self, draw, img):
+        gauges.tracked_text(draw, 52 * SS, 84 * SS, "VEHICLE  ·  ND1 MX-5 RF",
+                            font(26 * SS, "bold"), TEXT, tracking=4 * SS)
+        cells = self._cells()
+        for (title, unit), cell in zip(self._TILES, cells):
+            x, y = cell[0] * SS, cell[1] * SS
+            w, h = self.TILE_W * SS, self.TILE_H * SS
+            gauges.card(draw, x, y, x + w, y + h, radius=14 * SS, scale=SS)
+            gauges.tracked_text(draw, x + 22 * SS, y + 16 * SS, title,
+                                font(19 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
+            if unit:
+                draw.text((x + w - 22 * SS, y + 18 * SS), unit,
+                          font=font(20 * SS, "regular"), fill=TEXT_DIM,
+                          anchor="ra")
+        # Chip-strip separator.
+        draw.line([(self.CHIP_X * SS, (self.CHIP_Y - 16) * SS),
+                   ((SW // SS - self.CHIP_X) * SS, (self.CHIP_Y - 16) * SS)],
+                  fill=CARD_BORDER, width=SS)
+
+    # ---- dynamic ---------------------------------------------------------
+    def render(self, draw, img, snap, ctx):
+        cells = self._cells()
+        for (title, _unit), cell in zip(self._TILES, cells):
+            val, col, sub = self._value(title, snap)
+            self._tile(draw, cell, val, col, sub)
+        self._chip_strip(draw, snap)
+
+    @staticmethod
+    def _value(title, snap):
+        """Return (value_str|None, color, sub|None) for a tile title."""
+        if title == "SPEED":
+            v = _num(snap.speed_mph)
+            return (None if v is None else "%d" % int(round(v))), TEXT, None
+        if title == "RPM":
+            v = _num(snap.rpm)
+            # ND1 2.0L redline 6800 rpm.
+            col = DANGER if (v is not None and v >= 6800) else TEXT
+            return (None if v is None else "%d" % int(round(v))), col, None
+        if title == "GEAR":
+            g = snap.gear or "-"
+            return (g if g != "-" else None), ACCENT, None
+        if title == "COOLANT":
+            v = _num(snap.coolant_c)
+            col = TEXT
+            if v is not None:
+                col = DANGER if v > 110 else (WARN if v > 100 else OK)
+            return (None if v is None else "%d" % int(round(_to_f(v)))), col, None
+        if title == "PI TEMP":
+            v = _num(snap.cpu_temp_c)
+            col = TEXT
+            if v is not None:
+                col = DANGER if v > 80 else (WARN if v > 70 else OK)
+            return (None if v is None else "%d" % int(round(_to_f(v)))), col, None
+        if title == "FUEL":
+            v = _num(snap.fuel_pct)
+            col = TEXT
+            if v is not None:
+                col = DANGER if v < 10 else (WARN if v < 20 else OK)
+            sub = None if v is None else "~%.0f L of 45" % (v / 100.0 * 45.0)
+            return (None if v is None else "%d" % int(round(v))), col, sub
+        if title == "THROTTLE":
+            v = _num(snap.throttle_pct)
+            return (None if v is None else "%d" % int(round(v))), TEXT, None
+        if title == "MAP":
+            v = _num(snap.map_kpa)
+            sub = None
+            if v is not None:
+                boost = v - 101.3  # vs ~sea-level baro (NA engine: vacuum)
+                sub = "%+.0f vs baro" % boost
+            return (None if v is None else "%d" % int(round(v))), TEXT, sub
+        return None, TEXT, None
+
+    def _tile(self, draw, cell, value, vcol, sub):
+        x, y = cell[0] * SS, cell[1] * SS
+        vt = "--" if value is None else str(value)
+        draw.text((x + 22 * SS, y + 60 * SS), vt,
+                  font=font(72 * SS, "bold"), fill=vcol or TEXT)
+        if sub:
+            draw.text((x + 22 * SS, y + (self.TILE_H - 34) * SS), str(sub),
+                      font=font(18 * SS, "regular"), fill=TEXT_DIM)
+
+    def _chip_strip(self, draw, snap):
+        x = self.CHIP_X * SS
+        y = self.CHIP_Y * SS
+        roof = snap.roof or "-"
+        # RF hardtop: green when closed, amber otherwise (open / in transit /
+        # uncalibrated code) so a non-closed top is always conspicuous.
+        roof_col = OK if roof == "CLOSED" else (TEXT_DIM if roof == "-" else WARN)
+        turn = snap.turn or "off"
+        chips = [
+            ("ROOF " + roof, roof_col, roof == "CLOSED"),
+            ("L", OK if turn in ("L", "LR") else TEXT_DIM,
+             turn in ("L", "LR")),
+            ("R", OK if turn in ("R", "LR") else TEXT_DIM,
+             turn in ("R", "LR")),
+            ("LIGHTS " + (snap.headlight or "off").upper(),
+             ACCENT if (snap.headlight or "off") != "off" else TEXT_DIM,
+             (snap.headlight or "off") != "off"),
+            ("P-BRAKE", WARN if snap.parking_brake else TEXT_DIM,
+             bool(snap.parking_brake)),
+            ("REVERSE", WARN if snap.reverse else TEXT_DIM,
+             bool(snap.reverse)),
+            ("SRC " + (snap.source or "?"),
+             OK if snap.source == "LIVE" else TEXT_DIM, False),
+        ]
+        for txt, col, filled in chips:
+            w, _ = gauges.status_chip(draw, x, y, txt, col, filled=filled,
+                                      scale=SS)
+            x += w + 12 * SS
+
+
+# --------------------------------------------------------------------------- #
+# Page 3: raw CAN traffic
 # --------------------------------------------------------------------------- #
 class CanPage(Page):
     name = "CAN BUS"
@@ -622,7 +772,7 @@ class SystemPage(Page):
         temp = get_temp_c()
         tv, tcol = None, TEXT
         if temp is not None:
-            tv = "%d C" % int(round(temp))
+            tv = "%d F" % int(round(_to_f(temp)))
             tcol = DANGER if temp > 80 else (WARN if temp > 70 else OK)
         self._tile(draw, cells[1], tv, tcol, None)
 
@@ -1016,8 +1166,8 @@ class AIVisionPage(Page):
         chips.append(("SRC " + (source or "?").upper(), ok_col))
         chips.append(("INF %d fps" % int(round(inf)) if inf is not None
                       else "INF -- fps", TEXT_DIM))
-        chips.append(("HAILO %d C" % int(round(htemp)) if htemp is not None
-                      else "HAILO --", TEXT_DIM))
+        chips.append(("HAILO %d F" % int(round(_to_f(htemp)))
+                      if htemp is not None else "HAILO --", TEXT_DIM))
         chips.append((("LIVE" if live else (state or "?").upper()),
                       OK if live else WARN))
 
@@ -1139,7 +1289,8 @@ class AIVisionPage(Page):
 # --------------------------------------------------------------------------- #
 def make_pages() -> list:
     from .settings import SettingsPage  # function-level: no import cycle
-    pages = [GaugesPage(), CanPage(), SystemPage(), SettingsPage()]
+    pages = [GaugesPage(), VehiclePage(), CanPage(), SystemPage(),
+             SettingsPage()]
     # Vision page is appended after Settings if present, else at the end.
     # (Construction is import-guarded so a malformed page never breaks the
     # rotation; the page itself degrades to OFFLINE when the service is down.)

@@ -42,6 +42,14 @@ class Snapshot:
     recent_frames: list = field(default_factory=list)  # [(mono ts, id, bytes)]
     id_stats: dict = field(default_factory=dict)       # id -> (count, ema_hz)
     total_frames: int = 0
+    # ---- extra ND1 RF live signals (None/'-'/False when stale/unavailable) --
+    ambient_c: float | None = None     # outside-air temp (0x420 b6-7)
+    map_kpa: float | None = None       # manifold abs pressure (0xFD b7)
+    roof: str = "-"                    # 'CLOSED'|'OPEN'|'roof N' (RF hardtop)
+    turn: str = "off"                 # 'off'|'L'|'R'|'LR'
+    headlight: str = "off"            # 'off'|'TNS'|'TNS_LO'|'HI'
+    parking_brake: bool = False
+    reverse: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -55,11 +63,43 @@ ID_AUX = 0x204    # byte0: volts*10, byte1: throttle%, byte2: gear-code, byte3: 
 
 SIM_IDS = (ID_RPM, ID_SPEED, ID_TEMP, ID_AUX)
 
-# ---- Real 2017 MX-5 ND CAN IDs (reverse-engineered on the car) ----
-# IDs from the community ND DBC (berumiya/CAN_DBC_6thGenMazda):
+# ---- Real 2017 ND1 MX-5 GT RF CAN IDs (reverse-engineered on the car) ----
+# IDs/signals from the community ND DBC (berumiya/CAN_DBC_6thGenMazda,
+# MX5ND_6thGenMazda_HSCAN.dbc). All signals big-endian (Motorola, @0+).
 MX5_ID_PCM  = 0x202  # b0-1 rpm*0.25, b2-3 speed km/h*0.01, b4-5 throttle*0.0015625
 MX5_ID_TEMP = 0x420  # b0 coolant(-40)C, b6-7 ambient*0.25-3200 C
 MX5_ID_FUEL = 0x9E   # b5 fuel *0.2 L (ND tank ~45 L)
+MX5_ID_PCM2 = 0xFD   # MT_Gear_Actual @bit19 len3; MAP @b7 (kPa, +2 offset)
+MX5_ID_BCMM = 0x9A   # Turn @bit19 len2 (1=L,2=R,3=LR); Headlight @bit7 len4
+MX5_ID_IC   = 0x9F   # Parking_Brake @bit4; Reverse_Flag @bit7
+MX5_ID_ROOF = 0x472  # RoofGraphicStatus @bit23 len4 (RF retractable hardtop)
+
+# Motorola/big-endian @0+ value tables from the DBC.
+_TURN_MAP = {0: "off", 1: "L", 2: "R", 3: "LR"}
+_HEADLIGHT_MAP = {0: "off", 2: "TNS", 3: "TNS_LO", 12: "HI"}
+# RoofGraphicStatus has no VAL_ table in the DBC; codes inferred on the car by
+# operating the RF top. Unknown codes fall through to "roof N" for calibration.
+_ROOF_MAP = {0: "CLOSED", 1: "OPEN"}
+# MT_Gear_Actual (3-bit): 0=neutral, 1..6 gears. Reverse comes from 0x9F.
+_MT_GEAR_MAP = {0: "N", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6"}
+
+
+def _moto(data: bytes, start_bit: int, length: int) -> int | None:
+    """Extract a Motorola/big-endian (@0+) signal from a CAN payload.
+
+    `start_bit` is in DBC sawtooth notation (the signal's MSB; bits count
+    0=LSB..7=MSB within each byte). Returns None if the signal would run past
+    the available payload.
+    """
+    total = len(data) * 8
+    byte_idx = start_bit // 8
+    bit_in_byte = start_bit % 8
+    msb_pos = byte_idx * 8 + (7 - bit_in_byte)   # position from the left
+    if byte_idx >= len(data) or msb_pos + length > total:
+        return None
+    val = int.from_bytes(data, "big")
+    shift = total - (msb_pos + length)
+    return (val >> shift) & ((1 << length) - 1)
 
 # If no frame decodes for this long, vehicle data is considered stale: source
 # drops to 'NO DATA' and the live-looking fields blank to None ('--').
@@ -178,6 +218,13 @@ class DataLayer:
         self._volts: float | None = None
         self._throttle_pct: float | None = None
         self._fuel_pct: float | None = None
+        self._ambient_c: float | None = None
+        self._map_kpa: float | None = None
+        self._roof: str = "-"
+        self._turn: str = "off"
+        self._headlight: str = "off"
+        self._parking_brake: bool = False
+        self._reverse: bool = False
         self._source = "NO DATA"
         # monotonic time of last successfully-decoded frame (None => never)
         self._last_frame_ts: float | None = None
@@ -330,10 +377,10 @@ class DataLayer:
                 self._source = "SIM"
 
     def _decode_mx5(self, arb, data: bytes) -> None:
-        """2017 MX-5 ND live decode map. Signal definitions from the community
-        DBC (berumiya/CAN_DBC_6thGenMazda, MX5ND_6thGenMazda_HSCAN.dbc), all
-        big-endian (Motorola). RPM cross-checked on the car (rev test). Caller
-        holds _lock.
+        """2017 ND1 MX-5 GT RF live decode map. Signal definitions from the
+        community DBC (berumiya/CAN_DBC_6thGenMazda, MX5ND_6thGenMazda_HSCAN.dbc),
+        all big-endian (Motorola, @0+). RPM cross-checked on the car (rev test).
+        Caller holds _lock.
 
         NOTE: oil temp and battery voltage are NOT broadcast on HS-CAN (the
         Sport-gauge oil temp is computed inside the cluster) — unavailable.
@@ -345,13 +392,40 @@ class DataLayer:
             kmh = float((data[2] << 8) | data[3]) * 0.01            # b2-3 *0.01
             self._speed_mph = kmh * 0.621371
             self._throttle_pct = float((data[4] << 8) | data[5]) * 0.0015625
-        # ---- 0x420 HS_PCM: coolant (b0 -40) + ambient (b6-7 *0.25 -3200) ----
-        elif arb == MX5_ID_TEMP and len(data) >= 8:
+        # ---- 0x420 HS_PCM: coolant (b0 -40) ----
+        # NOTE: the DBC's AmbientTemp (b6-7 *0.25 -3200) reads a constant on the
+        # ND1 (b6-7 = F2 9B, a counter/checksum, not outside-air temp), so it is
+        # NOT decoded — ambient is cluster-only, like oil temp / battery volts.
+        elif arb == MX5_ID_TEMP and len(data) >= 1:
             self._coolant_c = float(data[0]) - 40.0
         # ---- 0x9E HS_IC: fuel tank (b5 *0.2 L -> % of 45 L ND tank) ----
         elif arb == MX5_ID_FUEL and len(data) >= 6:
             liters = float(data[5]) * 0.2
             self._fuel_pct = max(0.0, min(100.0, liters / 45.0 * 100.0))
+        # ---- 0xFD HS_PCM: MT gear (@bit19 len3) + MAP (b6, +2 kPa offset) ----
+        elif arb == MX5_ID_PCM2 and len(data) >= 7:
+            g = _moto(data, 19, 3)
+            if g is not None and not self._reverse:
+                self._gear = _MT_GEAR_MAP.get(g, "-")
+            self._map_kpa = float(data[6]) + 2.0
+        # ---- 0x9A HS_BCMM: turn signals (@bit19 len2) + headlights (@b7 len4)-
+        elif arb == MX5_ID_BCMM and len(data) >= 3:
+            t = _moto(data, 19, 2)
+            if t is not None:
+                self._turn = _TURN_MAP.get(t, "off")
+            h = _moto(data, 7, 4)
+            if h is not None:
+                self._headlight = _HEADLIGHT_MAP.get(h, "off")
+        # ---- 0x9F HS_IC: parking brake (@bit4) + reverse flag (@bit7) --------
+        elif arb == MX5_ID_IC and len(data) >= 1:
+            self._parking_brake = bool((data[0] >> 4) & 1)
+            self._reverse = bool((data[0] >> 7) & 1)
+            self._gear = "R" if self._reverse else self._gear
+        # ---- 0x472 HS_RHT: RF retractable hardtop status (@bit23 len4) -------
+        elif arb == MX5_ID_ROOF and len(data) >= 3:
+            r = _moto(data, 23, 4)
+            if r is not None:
+                self._roof = _ROOF_MAP.get(r, "roof %d" % r)
 
     def _record_raw(self, arb, data: bytes, now: float) -> None:
         """Track raw traffic for the CAN page. Caller holds _lock."""
@@ -442,6 +516,13 @@ class DataLayer:
                 volts = None
                 throttle = None
                 fuel = None
+                ambient = None
+                map_kpa = None
+                roof = "-"
+                turn = "off"
+                headlight = "off"
+                parking_brake = False
+                reverse = False
                 source = "NO DATA"
             else:
                 speed = self._speed_mph
@@ -451,6 +532,13 @@ class DataLayer:
                 volts = self._volts
                 throttle = self._throttle_pct
                 fuel = self._fuel_pct
+                ambient = self._ambient_c
+                map_kpa = self._map_kpa
+                roof = self._roof
+                turn = self._turn
+                headlight = self._headlight
+                parking_brake = self._parking_brake
+                reverse = self._reverse
                 source = self._source
             fps = self._fps
             recent = list(self.recent)
@@ -483,6 +571,13 @@ class DataLayer:
             recent_frames=recent,
             id_stats=id_stats,
             total_frames=total_frames,
+            ambient_c=ambient,
+            map_kpa=map_kpa,
+            roof=roof,
+            turn=turn,
+            headlight=headlight,
+            parking_brake=parking_brake,
+            reverse=reverse,
         )
 
     # -- demo ------------------------------------------------------------- #
