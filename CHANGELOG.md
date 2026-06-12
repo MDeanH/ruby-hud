@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.1.2 — 2026-06-11
+- rubyvision import robustness: unit uses PYTHONPATH=/home/michael/hud/../vision
+  (live release, auto-tracks OTA) instead of a fragile pip editable install that
+  could dangle at a pruned worktree. OV5647 CSI camera support verified.
+
 ## v3.1.1 — 2026-06-11
 - Vision: publisher self-heals /dev/shm/rubyvision dir before each write
   (survives Debian tmpfiles cleanup of tmpfs that broke the service mid-run).

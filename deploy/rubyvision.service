@@ -12,15 +12,14 @@ User=michael
 Group=michael
 # video: V4L2 / camera nodes; render: Hailo /dev/hailo* DRI access.
 SupplementaryGroups=video render
-# rubyvision must be importable by this interpreter. Either:
-#   (a) pip install -e <release>/vision into ruby-env (preferred; setup-vision.sh
-#       does this against the live release, reached via the /home/michael/hud
-#       symlink), OR
-#   (b) fall back to PYTHONPATH below (uncomment) if the editable install is
-#       not present. /home/michael/hud is the symlink to the active release, so
-#       this always points at the live code (not the bootstrap clone).
-#Environment=PYTHONPATH=/home/michael/hud/vision
-Environment=PYTHONUNBUFFERED=1
+# rubyvision is imported via PYTHONPATH rather than a pip editable install: the
+# PEP-660 editable finder bakes in an absolute path, and the OTA updater stages
+# each release in a throwaway worktree -- so an editable install can end up
+# pointing at a pruned release dir (dangling -> "No module named rubyvision").
+# /home/michael/hud is the symlink to the active release's hud/; vision/ is its
+# sibling, so /home/michael/hud/../vision always resolves to the LIVE release's
+# vision package and auto-tracks OTA updates (restart rubyvision after an apply).
+Environment=PYTHONUNBUFFERED=1 PYTHONPATH=/home/michael/hud/../vision
 ExecStart=/home/michael/ruby-env/bin/python -m rubyvision --models /home/michael/vision/models --shm /dev/shm/rubyvision --fps 15
 Restart=always
 RestartSec=2
