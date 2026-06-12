@@ -227,9 +227,11 @@ class CsiSource:
             return None
         if arr is None:
             return None
-        # picamera2 RGB888 main stream is already RGB; ensure 3-channel uint8.
+        # picamera2's "RGB888" main stream actually delivers BGR byte order in
+        # the numpy array (libcamera format names are reversed vs numpy), so
+        # reverse the first 3 channels to get true RGB.
         if arr.ndim == 3 and arr.shape[2] >= 3:
-            return np.ascontiguousarray(arr[:, :, :3], dtype=np.uint8)
+            return np.ascontiguousarray(arr[:, :, 2::-1], dtype=np.uint8)
         return None
 
     def close(self):

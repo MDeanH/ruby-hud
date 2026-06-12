@@ -1,6 +1,10 @@
 # Changelog
 
 ## v3.1.2 — 2026-06-11
+
+## v3.1.3 — 2026-06-11
+- vision: fix CSI camera red cast (picamera2 RGB888 is BGR byte order -> swap to RGB).
+
 - rubyvision import robustness: unit uses PYTHONPATH=/home/michael/hud/../vision
   (live release, auto-tracks OTA) instead of a fragile pip editable install that
   could dangle at a pruned worktree. OV5647 CSI camera support verified.
