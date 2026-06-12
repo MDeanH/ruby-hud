@@ -268,14 +268,26 @@ class HailoDetector:
         dets = []
         if flat.size != NMS_OUTPUT_FLOATS:
             return self._parse_nms({"out": flat})   # legacy fallback paths
-        arr = flat.reshape(NMS_NUM_CLASSES, NMS_PER_CLASS_FLOATS)
+        # PACKED walk: HailoRT NMS-BY-CLASS writes each class record as
+        # [count, count*5 box floats] back-to-back (NOT padded to a fixed
+        # 501-float stride). A fixed-stride reshape decodes only class 0
+        # (person) correctly and reads garbage offsets for car/bus/truck/...
+        # — the bug that made vehicles undetectable. Walk sequentially.
+        off = 0
+        n = flat.size
         for cls_idx in range(NMS_NUM_CLASSES):
-            count = int(arr[cls_idx, 0])
-            if count <= 0 or count > NMS_MAX_BOXES:
-                continue
-            rows = arr[cls_idx, 1:1 + count * 5].reshape(count, 5)
-            for row in rows:
-                self._append_row(dets, cls_idx, row)
+            if off >= n:
+                break
+            count = int(flat[off])
+            off += 1
+            if count < 0 or count > NMS_MAX_BOXES:
+                break                      # corrupt record: stop, keep parsed
+            need = count * 5
+            if count and off + need <= n:
+                rows = flat[off:off + need].reshape(count, 5)
+                for row in rows:
+                    self._append_row(dets, cls_idx, row)
+            off += need
         return dets
 
     def _parse_nms(self, raw_outputs):
