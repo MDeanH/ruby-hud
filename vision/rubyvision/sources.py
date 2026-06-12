@@ -209,8 +209,39 @@ class CsiSource:
             raise SourceUnavailable("picamera2 import failed: %s" % exc)
         try:
             self._cam = Picamera2()
-            cfg = self._cam.create_preview_configuration(
-                main={"size": (CAP_W, CAP_H), "format": "RGB888"})
+            # Default preview config lets libcamera pick the full-res 2592x1944
+            # sensor mode (15.6 fps) and downscale -- capping the whole pipeline
+            # at ~15 fps regardless of compute headroom. Select a faster sensor
+            # mode via the raw stream and lift FrameDurationLimits to 30 fps so
+            # the camera stops being the bottleneck. We prefer the smallest
+            # sensor mode that still covers CAP_W and runs >= 30 fps (on the
+            # OV5647 that is 1296x972 @ 46 fps); fall back gracefully if the
+            # mode list or controls are unavailable on another sensor.
+            main = {"size": (CAP_W, CAP_H), "format": "RGB888"}
+            controls = {"FrameDurationLimits": (33333, 33333)}  # ~30 fps
+            raw = None
+            try:
+                fast = None
+                for m in sorted(self._cam.sensor_modes,
+                                key=lambda mm: mm.get("size", (1e9, 1e9))[0]):
+                    size = m.get("size") or (0, 0)
+                    if size[0] >= CAP_W and (m.get("fps") or 0) >= 30:
+                        fast = m
+                        break
+                if fast is not None:
+                    raw = {"size": fast["size"]}
+            except Exception:
+                raw = None
+            try:
+                if raw is not None:
+                    cfg = self._cam.create_preview_configuration(
+                        main=main, raw=raw, controls=controls)
+                else:
+                    cfg = self._cam.create_preview_configuration(
+                        main=main, controls=controls)
+            except Exception:
+                # Oldest picamera2 without controls kwarg: config without it.
+                cfg = self._cam.create_preview_configuration(main=main)
             self._cam.configure(cfg)
             self._cam.start()
         except Exception as exc:

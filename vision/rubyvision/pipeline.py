@@ -288,29 +288,15 @@ class Pipeline:
 
             if frame is not None and fseq != self._last_fseq:
                 # New frame: letterbox -> infer -> map -> annotate -> publish.
-                _PROF = getattr(self, "_prof", None)
-                if _PROF is None:
-                    _PROF = self._prof = {"n": 0, "wait_for_frame": 0.0,
-                                          "letterbox": 0.0, "infer": 0.0,
-                                          "annotate": 0.0, "encode": 0.0,
-                                          "status": 0.0, "pace": 0.0,
-                                          "last_dump": time.monotonic(),
-                                          "iter_start": t0}
-                _PROF["wait_for_frame"] += t0 - _PROF.get("iter_start", t0)
                 self._last_fseq = fseq
-                _ts = time.monotonic()
                 img640, scale, padx, pady = annotate.letterbox(frame)
-                _PROF["letterbox"] += time.monotonic() - _ts
-                _ts = time.monotonic()
                 try:
                     raw_dets = self.detector.infer(img640)
                 except Exception:
                     raw_dets = []
-                _PROF["infer"] += time.monotonic() - _ts
                 self._push_time(self._infer_times, time.monotonic())
                 inf_fps = self._fps_from(self._infer_times)
 
-                _ts = time.monotonic()
                 src_h, src_w = frame.shape[0], frame.shape[1]
                 for d in raw_dets:
                     try:
@@ -328,44 +314,14 @@ class Pipeline:
                 badge = self._badge(kind, state)
                 preview = annotate.to_preview(frame)
                 annotated = annotate.draw_overlay(preview, detections, badge)
-                _PROF["annotate"] += time.monotonic() - _ts
                 self.seq += 1
                 self._last_dets = detections
-                _ts = time.monotonic()
                 self.pub.write_frame(annotated)
-                _PROF["encode"] += time.monotonic() - _ts
-                _ts = time.monotonic()
                 self._publish_status(state=state, kind=kind,
                                      detections=detections, inf_fps=inf_fps,
                                      loop_fps=loop_fps,
                                      hailo_temp=self._hailo_temp())
                 last_status = time.monotonic()
-                _PROF["status"] += last_status - _ts
-                _PROF["n"] += 1
-                _PROF["iter_start"] = last_status
-                if last_status - _PROF["last_dump"] >= 5.0 and _PROF["n"] > 0:
-                    nf = _PROF["n"]
-                    try:
-                        with open("/tmp/rubyvision_prof.txt", "a") as _fh:
-                            _fh.write(
-                                "PROF n=%d inf_fps=%.1f | wait=%.1f lb=%.1f "
-                                "infer=%.1f annot=%.1f enc=%.1f stat=%.1f "
-                                "pace=%.1f (ms/frame)\n" % (
-                                    nf, inf_fps,
-                                    _PROF["wait_for_frame"] / nf * 1000,
-                                    _PROF["letterbox"] / nf * 1000,
-                                    _PROF["infer"] / nf * 1000,
-                                    _PROF["annotate"] / nf * 1000,
-                                    _PROF["encode"] / nf * 1000,
-                                    _PROF["status"] / nf * 1000,
-                                    _PROF["pace"] / nf * 1000))
-                    except Exception:
-                        pass
-                    for _k in ("wait_for_frame", "letterbox", "infer",
-                               "annotate", "encode", "status", "pace"):
-                        _PROF[_k] = 0.0
-                    _PROF["n"] = 0
-                    _PROF["last_dump"] = last_status
             elif frame is not None:
                 # Same frame still in the slot (loop outran the source): skip the
                 # redundant infer/annotate/write_frame. Just emit the periodic
@@ -400,13 +356,9 @@ class Pipeline:
             self._push_time(self._loop_times, time.monotonic())
 
             # pace
-            _pace0 = time.monotonic()
-            dt = _pace0 - t0
+            dt = time.monotonic() - t0
             if dt < self.period:
                 self._stop.wait(self.period - dt)
-            _prof = getattr(self, "_prof", None)
-            if _prof is not None:
-                _prof["pace"] += time.monotonic() - _pace0
 
         self._shutdown()
 
