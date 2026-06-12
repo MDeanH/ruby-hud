@@ -32,6 +32,24 @@ from .sources import CAP_H, CAP_W
 
 INFER_SIZE = 640
 
+# HAILO NMS BY CLASS output layout (verified via `hailortcli parse-hef
+# yolov8m_h10.hef`: 80 classes, max 100 boxes/class, frame 160320 bytes =
+# 40080 float32). Matches the ServeBot S1 worker constants.
+NMS_NUM_CLASSES = 80
+NMS_MAX_BOXES = 100
+NMS_PER_CLASS_FLOATS = 1 + NMS_MAX_BOXES * 5      # 501
+NMS_OUTPUT_FLOATS = NMS_NUM_CLASSES * NMS_PER_CLASS_FLOATS  # 40080
+
+
+def _log(msg):
+    """Throttle-friendly file logger (never raises)."""
+    try:
+        with open("/tmp/rubyvision.log", "a") as f:
+            f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
+
+
 
 class DetectorUnavailable(Exception):
     """Raised when a detector cannot be constructed (no SDK / no HEF)."""
@@ -172,14 +190,37 @@ class HailoDetector:
         self._hpf = hpf
 
         try:
-            self._vdevice = hpf.VDevice()
+            import numpy as np
+            # VDevice + InferModel exactly as the PROVEN ServeBot S1 worker
+            # (same Hailo-10H, same yolov8 H10 HEF, HailoRT 5.x):
+            #   ~/Desktop/mac-backup-projects-20260511/Servebot v5/
+            #     hailo_detection/hailo_worker.py
+            try:
+                params = hpf.VDevice.create_params()
+                params.scheduling_algorithm = \
+                    hpf.HailoSchedulingAlgorithm.ROUND_ROBIN
+                self._vdevice = hpf.VDevice(params)
+            except Exception:
+                self._vdevice = hpf.VDevice()
             self._infer_model = self._vdevice.create_infer_model(self._hef_path)
-            # Common knobs; guarded since older/newer SDKs differ.
             try:
                 self._infer_model.set_batch_size(1)
             except Exception:
                 pass
+            # Input stays UINT8 (per parse-hef); output FLOAT32 so the NMS
+            # buffer arrives dequantized.
+            try:
+                self._infer_model.output().set_format_type(
+                    hpf.FormatType.FLOAT32)
+            except Exception:
+                pass
             self._configured = self._infer_model.configure()
+            # HailoRT 5.x REQUIRES a pre-allocated output buffer bound by name
+            # in create_bindings(); a bare create_bindings() makes run() raise
+            # HailoRTInvalidOperationException (the bug that produced silent
+            # zero-detection behavior here before).
+            self._output_name = self._infer_model.output().name
+            self._output_buf = np.empty(NMS_OUTPUT_FLOATS, dtype=np.float32)
         except Exception as exc:
             self.close()
             raise DetectorUnavailable("hailo device/model init failed: %s"
@@ -189,27 +230,42 @@ class HailoDetector:
 
     def infer(self, rgb640):
         """Run inference on a 640x640 RGB uint8 array; return detections in
-        640 space. Never raises (returns [] on any runtime error)."""
+        640 space. Never raises (returns [] on any runtime error, but logs
+        the first error per minute so failures are not silent)."""
         try:
             import numpy as np
             arr = np.ascontiguousarray(rgb640, dtype=np.uint8)
-            # NOTE: input dtype (uint8 vs float32 normalized) is model-specific;
-            # confirm via parse-hef. Many Hailo HEFs accept uint8 directly.
-            bindings = self._infer_model.create_bindings()
-            in_name = self._infer_model.input_names[0]
-            bindings.input(in_name).set_buffer(arr)
-            for out_name in self._infer_model.output_names:
-                # Output buffer allocation is handled by the SDK in most
-                # versions; if your SDK requires a pre-allocated buffer, set it
-                # here using the shape from parse-hef.
-                pass
-            self._configured.run([bindings], timeout_ms=1000)
-            raw = {}
-            for out_name in self._infer_model.output_names:
-                raw[out_name] = bindings.output(out_name).get_buffer()
-            return self._parse_nms(raw)
-        except Exception:
+            bindings = self._configured.create_bindings(
+                output_buffers={self._output_name: self._output_buf})
+            bindings.input().set_buffer(arr)
+            self._configured.run([bindings], 2000)
+            flat = self._output_buf.reshape(-1)
+            return self._parse_nms_by_class(flat)
+        except Exception as exc:
+            now = time.monotonic()
+            if now - getattr(self, "_last_err_log", 0.0) > 60.0:
+                self._last_err_log = now
+                _log("hailo infer failed: %r" % (exc,))
             return []
+
+    def _parse_nms_by_class(self, flat):
+        """Decode the HAILO NMS BY CLASS flat float32 buffer (verified layout:
+        80 classes x [count, count*(y_min,x_min,y_max,x_max,score)...] padded
+        to 100 boxes/class = 40080 floats; coords normalized 0..1). Returns
+        detections in 640x640 pixel space. Ported from the proven ServeBot
+        parser."""
+        dets = []
+        if flat.size != NMS_OUTPUT_FLOATS:
+            return self._parse_nms({"out": flat})   # legacy fallback paths
+        arr = flat.reshape(NMS_NUM_CLASSES, NMS_PER_CLASS_FLOATS)
+        for cls_idx in range(NMS_NUM_CLASSES):
+            count = int(arr[cls_idx, 0])
+            if count <= 0 or count > NMS_MAX_BOXES:
+                continue
+            rows = arr[cls_idx, 1:1 + count * 5].reshape(count, 5)
+            for row in rows:
+                self._append_row(dets, cls_idx, row)
+        return dets
 
     def _parse_nms(self, raw_outputs):
         """BEST-EFFORT parser for Hailo 'nms_postprocess' output.
