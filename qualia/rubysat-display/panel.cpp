@@ -96,8 +96,13 @@ bool panel_begin() {
       1 /* hsync_polarity */, 46 /* hsync_front_porch */,
       2 /* hsync_pulse_width */, 44 /* hsync_back_porch */,
       1 /* vsync_polarity */, 50 /* vsync_front_porch */,
-      16 /* vsync_pulse_width */, 16 /* vsync_back_porch */);
-      // pclk/speed: library defaults — exactly Adafruit's Qualia_S3_Product_Demo.
+      16 /* vsync_pulse_width */, 16 /* vsync_back_porch */,
+      0 /* pclk_active_neg (Adafruit demo default) */,
+      GFX_NOT_DEFINED /* prefer_speed (library default) */,
+      false /* useBigEndian */, 0 /* de_idle_high */, 0 /* pclk_idle_high */,
+      480 * 20 /* bounce_buffer_size_px: stage scanlines in internal SRAM to
+                  stop PSRAM-contention shimmer (faint horizontal lines when
+                  WiFi + LVGL compete with the panel scanout for PSRAM) */);
 
   // 3) RGB display: 480x480; the ST7701-family controller on this panel NEEDS
   //    its init sequence, clocked out via the expander's 9-bit SW-SPI

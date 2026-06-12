@@ -16,7 +16,7 @@
 #define C_BG       lv_color_hex(0x07090c)
 #define C_PANEL    lv_color_hex(0x10141b)
 #define C_BORDER   lv_color_hex(0x2a3340)
-#define C_TRACK    lv_color_hex(0x2a3340)
+#define C_TRACK    lv_color_hex(0x161b23)
 #define C_TRACKBR  lv_color_hex(0x4a5666)
 #define C_ACCENT   lv_color_hex(0xd0273b)   // Soul Red
 #define C_GLOW     lv_color_hex(0xff4d5c)
@@ -182,12 +182,12 @@ void ui_init() {
   chip_can = lv_obj_create(scr);
   lv_obj_remove_style_all(chip_can);
   lv_obj_add_style(chip_can, &st_chip, 0);
-  lv_obj_set_size(chip_can, 132, 34);
+  lv_obj_set_size(chip_can, 150, 34);
   lv_obj_align(chip_can, LV_ALIGN_TOP_LEFT, 16, 16);
   chip_can_lbl = lv_label_create(chip_can);
   lv_label_set_text(chip_can_lbl, "CAN --");
   lv_obj_set_style_text_color(chip_can_lbl, C_TEXT, 0);
-  lv_obj_set_style_text_font(chip_can_lbl, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_font(chip_can_lbl, &lv_font_montserrat_18, 0);
   lv_obj_center(chip_can_lbl);
 
   // ---- vision chip (top-right) ----
@@ -199,7 +199,7 @@ void ui_init() {
   chip_vis_lbl = lv_label_create(chip_vis);
   lv_label_set_text(chip_vis_lbl, "VIS off");
   lv_obj_set_style_text_color(chip_vis_lbl, C_TEXT, 0);
-  lv_obj_set_style_text_font(chip_vis_lbl, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_font(chip_vis_lbl, &lv_font_montserrat_18, 0);
   lv_obj_center(chip_vis_lbl);
 
   // ---- connection dot + SoC temp (top-center) ----
