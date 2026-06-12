@@ -55,6 +55,10 @@ ID_AUX = 0x204    # byte0: volts*10, byte1: throttle%, byte2: gear-code, byte3: 
 
 SIM_IDS = (ID_RPM, ID_SPEED, ID_TEMP, ID_AUX)
 
+# ---- Real 2017 MX-5 ND CAN IDs (reverse-engineered on the car) ----
+MX5_ID_RPM = 0x202     # b0-1 BE /4 = rpm; b4 = throttle % (verified on car)
+MX5_ID_COOLANT = 0x488 # byte 2, raw-40 = coolant degC (best-fit, verify on dash)
+
 # If no frame decodes for this long, vehicle data is considered stale: source
 # drops to 'NO DATA' and the live-looking fields blank to None ('--').
 STALE_AFTER_S = 1.5
@@ -158,6 +162,7 @@ def _run(cmd: list[str], timeout: float = 2.0) -> str | None:
 class DataLayer:
     def __init__(self, channel: str):
         self.channel = channel
+        self._live = (channel != "vcan0")  # real car vs bench sim decode map
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -292,7 +297,12 @@ class DataLayer:
             self._last_frame_ts = time.monotonic()
             self._record_raw(arb, data, self._last_frame_ts)
 
-            if arb in SIM_IDS:
+            # Real car (can0) and the vcan0 simulator collide on some IDs
+            # (e.g. 0x202 = sim SPEED but real MX-5 RPM). Pick the map by
+            # channel so the bench sim and the live car never cross-decode.
+            if self._live:
+                self._decode_mx5(arb, data)
+            elif arb in SIM_IDS:
                 self._source = "SIM"
                 if arb == ID_RPM:
                     v = decode_rpm(data)
@@ -314,13 +324,25 @@ class DataLayer:
                         self._gear = aux["gear"]
                         self._fuel_pct = aux["fuel_pct"]
             else:
-                # LIVE decode map is a TODO stub: frames present but unmapped.
-                # Mark source 'LIVE' and leave vehicle fields None/untouched.
-                # TODO: implement real vehicle (J1939/OBD-II) decode here.
-                # Drive source from the current frame class so it transitions
-                # SIM -> LIVE when SIM frames stop and only unmapped frames
-                # arrive, rather than latching SIM for the session.
-                self._source = "LIVE"
+                # vcan0 sim, unmapped sim ID: leave fields untouched.
+                self._source = "SIM"
+
+    def _decode_mx5(self, arb, data: bytes) -> None:
+        """2017 MX-5 ND live decode map (reverse-engineered on the car,
+        2026-06-13). Caller holds _lock. Add signals here as verified."""
+        self._source = "LIVE"
+        # RPM: ID 0x202, bytes 0-1 BE / 4. Verified by rev test: idle raw
+        # 3291 (=822 rpm), ~3k rev raw 11635 (=2908 rpm).
+        if arb == MX5_ID_RPM and len(data) >= 5:
+            self._rpm = float((data[0] << 8) | data[1]) / 4.0
+            # Throttle/accelerator: byte 4 = 0-100% (idle 0; pedal-press scan
+            # showed pair b4-5 = b4*256, i.e. b4 is the integer percent).
+            self._throttle_pct = float(data[4])
+        # Coolant: ID 0x488 byte 2, raw - 40 = degC (warm raw 0x82=130 -> 90C).
+        elif arb == MX5_ID_COOLANT and len(data) >= 3:
+            self._coolant_c = float(data[2]) - 40.0
+        # Speed (MPH): not yet identified (car parked during rev test) ->
+        # leave None so it shows '--' rather than a bogus number.
 
     def _record_raw(self, arb, data: bytes, now: float) -> None:
         """Track raw traffic for the CAN page. Caller holds _lock."""
