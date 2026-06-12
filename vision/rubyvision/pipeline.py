@@ -263,6 +263,29 @@ class Pipeline:
             inf_fps = self._fps_from(self._infer_times)
             loop_fps = self._fps_from(self._loop_times)
 
+            # Boot-race recovery: if auto-selection landed on the stub
+            # (e.g. /dev/hailo0 not ready at service start), retry the real
+            # detector every 30s once the device shows up.
+            now_m = time.monotonic()
+            if (getattr(self.detector, "name", "") == "stub"
+                    and self.detector_pref in ("auto", "hailo")
+                    and now_m - getattr(self, "_hailo_retry_t", 0.0) > 30.0
+                    and os.path.exists("/dev/hailo0")):
+                self._hailo_retry_t = now_m
+                hefs = detector.find_hefs(self.models_dir)
+                if hefs:
+                    try:
+                        det = detector.HailoDetector(hefs[0],
+                                                     model_dir=self.models_dir)
+                        old = self.detector
+                        self.detector = det
+                        try:
+                            old.close()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
             if frame is not None and fseq != self._last_fseq:
                 # New frame: letterbox -> infer -> map -> annotate -> publish.
                 self._last_fseq = fseq

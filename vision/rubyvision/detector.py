@@ -221,6 +221,17 @@ class HailoDetector:
             # zero-detection behavior here before).
             self._output_name = self._infer_model.output().name
             self._output_buf = np.empty(NMS_OUTPUT_FLOATS, dtype=np.float32)
+            # Warmup: the first run() after configure often hits
+            # HAILO_TIMEOUT while the NPU spins up. Burn it on a blank
+            # frame so live frames never miss.
+            try:
+                warm = np.zeros((INFER_SIZE, INFER_SIZE, 3), dtype=np.uint8)
+                b = self._configured.create_bindings(
+                    output_buffers={self._output_name: self._output_buf})
+                b.input().set_buffer(warm)
+                self._configured.run([b], 5000)
+            except Exception:
+                pass
         except Exception as exc:
             self.close()
             raise DetectorUnavailable("hailo device/model init failed: %s"
