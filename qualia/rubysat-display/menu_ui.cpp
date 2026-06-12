@@ -21,6 +21,8 @@ extern void net_force_reconnect();
 extern void panel_backlight(bool on);
 extern void display_set_rotated(bool rot180);   // persists in NVS
 extern bool display_is_rotated();
+extern void display_set_mirror(bool on);        // windshield HUD flip (NVS)
+extern bool display_is_mirrored();
 
 #define FW_VERSION "3.3.0-sat"
 
@@ -76,6 +78,7 @@ static const char *vf_psram()  { snprintf(s_buf[3], 48, "%u KB", (unsigned)(ESP.
 static const char *vf_uptime() { unsigned s=millis()/1000; snprintf(s_buf[4],48,"%uh%02um",s/3600,(s%3600)/60); return s_buf[4]; }
 static const char *vf_ack()    { return s_lastack; }
 static const char *vf_rot()    { return display_is_rotated() ? "ON" : "off"; }
+static const char *vf_mir()    { return display_is_mirrored() ? "ON" : "off"; }
 
 // ------------------------------------------------------------------ menus    //
 // indices: 0 root, 1 RUBY, 2 DISPLAY, 3 CONNECTION, 4 ABOUT
@@ -96,9 +99,10 @@ static Menu g_menus[5] = {
   }, 6 },
   { "DISPLAY", {
       { ROW_BACK,   "< back",        nullptr, false, false, 0, nullptr },
+      { ROW_ACTION, "HUD Mirror",    "@mir",  false, false, 0, vf_mir },
       { ROW_ACTION, "Rotate 180",    "@rot",  false, false, 0, vf_rot },
       { ROW_ACTION, "Backlight test","@blt",  false, false, 0, nullptr },
-  }, 3 },
+  }, 4 },
   { "CONNECTION", {
       { ROW_BACK,   "< back",     nullptr,    false, false, 0, nullptr },
       { ROW_INFO,   "SSID",       nullptr,    false, false, 0, vf_ssid },
@@ -215,7 +219,8 @@ static void do_action(int menu_idx, int row_idx) {
   Row &row = g_menus[menu_idx].rows[row_idx];
   if (row.verb && row.verb[0] == '@') {
     // local action
-    if (!strcmp(row.verb, "@rot"))   { display_set_rotated(!display_is_rotated()); show_toast("rotated"); build_list(menu_idx); }
+    if (!strcmp(row.verb, "@mir"))   { display_set_mirror(!display_is_mirrored()); show_toast("HUD mirror"); build_list(menu_idx); }
+    else if (!strcmp(row.verb, "@rot"))   { display_set_rotated(!display_is_rotated()); show_toast("rotated"); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@blt")) { panel_backlight(false); lv_timer_handler(); delay(250); panel_backlight(true); show_toast("backlight"); }
     else if (!strcmp(row.verb, "@recon")) { net_force_reconnect(); show_toast("reconnecting"); }
     return;

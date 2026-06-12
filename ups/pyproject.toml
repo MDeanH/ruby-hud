@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rubyups"
+version = "0.1.0"
+description = "Ruby Pi graceful power-loss daemon for the SunFounder PiPower 5 UPS HAT (SPC @ I2C 0x5C). Debounced AC-loss detection -> grace -> clean poweroff."
+requires-python = ">=3.11"
+# smbus2 is the only runtime dep and it is ALREADY in ruby-env (installed for
+# the Pi's I2C work) -- it is imported lazily so this package also imports fine
+# on a bare host with no I2C (the daemon then runs in NO_HAT telemetry-blind
+# mode and never triggers a shutdown). Declared here for completeness so a fresh
+# venv install pulls it.
+dependencies = ["smbus2"]
+
+[tool.setuptools.packages.find]
+include = ["rubyups*"]

@@ -217,37 +217,6 @@ void ui_init(lv_obj_t *parent) {
   lv_obj_set_style_text_font(link_lbl, &lv_font_montserrat_22, 0);
   lv_obj_align(link_lbl, LV_ALIGN_TOP_MID, 18, 24);
 
-  // ---- VISIBLE HUD-control buttons (bottom corners): flip the Pi HUD's
-  //      pages remotely. They emit page_prev/page_next CMDs which rubysat
-  //      bridges to rubyhud (/dev/shm/rubyhud-remote.json). Placed low and
-  //      small so they don't crowd the gauges; styled as chips.
-  lv_obj_t *bl = lv_btn_create(scr);
-  lv_obj_set_size(bl, 96, 52);
-  lv_obj_align(bl, LV_ALIGN_BOTTOM_LEFT, 8, -6);
-  lv_obj_set_style_bg_color(bl, C_PANEL, 0);
-  lv_obj_set_style_border_color(bl, C_ACCENT, 0);
-  lv_obj_set_style_border_width(bl, 1, 0);
-  lv_obj_set_style_radius(bl, 12, 0);
-  lv_obj_add_event_cb(bl, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_prev");
-  lv_obj_t *bll = lv_label_create(bl);
-  lv_label_set_text(bll, "< HUD");
-  lv_obj_set_style_text_color(bll, C_TEXT, 0);
-  lv_obj_set_style_text_font(bll, &lv_font_montserrat_18, 0);
-  lv_obj_center(bll);
-
-  lv_obj_t *br = lv_btn_create(scr);
-  lv_obj_set_size(br, 96, 52);
-  lv_obj_align(br, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
-  lv_obj_set_style_bg_color(br, C_PANEL, 0);
-  lv_obj_set_style_border_color(br, C_ACCENT, 0);
-  lv_obj_set_style_border_width(br, 1, 0);
-  lv_obj_set_style_radius(br, 12, 0);
-  lv_obj_add_event_cb(br, tapzone_cb, LV_EVENT_CLICKED, (void *)"page_next");
-  lv_obj_t *brl = lv_label_create(br);
-  lv_label_set_text(brl, "HUD >");
-  lv_obj_set_style_text_color(brl, C_TEXT, 0);
-  lv_obj_set_style_text_font(brl, &lv_font_montserrat_18, 0);
-  lv_obj_center(brl);
 }
 
 // --- helpers --------------------------------------------------------------- //

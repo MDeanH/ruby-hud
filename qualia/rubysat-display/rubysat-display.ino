@@ -32,6 +32,8 @@ void net_force_reconnect();
 void panel_backlight(bool on);
 void display_set_rotated(bool rot180);
 bool display_is_rotated();
+void display_set_mirror(bool on);
+bool display_is_mirrored();
 void menu_ui_tick();
 
 // Forward declarations (the .ino is one translation unit; declare before use so
@@ -47,11 +49,14 @@ static void send_cmd(const char *cmd, int x, int y);
 // v8 single-buffer partial render is plenty for these gauges.
 static const uint32_t SCREEN_W = 480;
 static const uint32_t SCREEN_H = 480;
-static const uint32_t DRAW_LINES = 72;                  // buffer height in px
+static const uint32_t DRAW_LINES = 48;                  // px/buffer (2 bufs)
 static const uint32_t DRAW_BUF_PX = SCREEN_W * DRAW_LINES;
 
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t *buf1 = nullptr;                      // allocated in PSRAM
+static lv_color_t *buf1 = nullptr;   // double-buffered in INTERNAL SRAM
+static lv_color_t *buf2 = nullptr;   // (fast + off the contended PSRAM bus)
+static bool g_mirror = false;        // HUD windshield mirror (defined early:
+                                     // disp_flush/touch_read use it)
 
 // Flush callback: push the rendered region to the RGB panel. Arduino_GFX's
 // draw16bitRGBBitmap takes RGB565 which matches LV_COLOR_DEPTH 16.
@@ -59,6 +64,22 @@ static void disp_flush(lv_disp_drv_t *drv, const lv_area_t *area,
                        lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
+  if (g_mirror) {
+    // Horizontal flip: reverse each row and place the region at the mirrored
+    // X (SCREEN_W-1-x2). Line-at-a-time keeps the temp buffer to one row.
+    static uint16_t linebuf[SCREEN_W];
+    uint16_t *src = (uint16_t *)color_p;
+    int dx = (int)SCREEN_W - 1 - (int)area->x2;
+    if (w <= SCREEN_W) {
+      for (uint32_t row = 0; row < h; row++) {
+        uint16_t *r = src + row * w;
+        for (uint32_t i = 0; i < w; i++) linebuf[i] = r[w - 1 - i];
+        gfx->draw16bitRGBBitmap(dx, area->y1 + row, linebuf, w, 1);
+      }
+    }
+    lv_disp_flush_ready(drv);
+    return;
+  }
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)color_p, w, h);
   lv_disp_flush_ready(drv);
 }
@@ -75,6 +96,7 @@ volatile int16_t g_last_touch_y = 0;
 static void touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   int16_t tx, ty;
   if (touch_get(&tx, &ty)) {
+    if (g_mirror) tx = (int16_t)SCREEN_W - 1 - tx;   // match the flipped image
     data->state = LV_INDEV_STATE_PRESSED;
     data->point.x = tx;
     data->point.y = ty;
@@ -130,6 +152,16 @@ void display_set_rotated(bool rot180) {
   lv_disp_set_rotation(lv_disp_get_default(),
                        rot180 ? LV_DISP_ROT_180 : LV_DISP_ROT_NONE);
 }
+// HUD mirror: pre-flip the image so it reads correctly reflected off the
+// windshield when the panel lies flat on the dash. Horizontal flip (a mirror
+// reverses left<->right); applied in disp_flush + touch. Persisted in NVS.
+bool display_is_mirrored() { return g_mirror; }
+void display_set_mirror(bool on) {
+  g_mirror = on;
+  g_prefs.putUChar("mirror", on ? 1 : 0);
+  lv_obj_invalidate(lv_scr_act());   // force a full redraw in the new mapping
+}
+
 void net_force_reconnect();   // defined below near net_pump
 
 static void dots_update(lv_event_t *e) {
@@ -278,6 +310,26 @@ static void handle_state_line(const String &line) {
   ui_set_link(true);
   g_rx_lines++;
 
+  // Satellite control from the 7" Ruby HUD: transient {"ctl":{"seq":N,
+  // "cmd":"..."}} rides STATE lines for a few seconds; seq-deduped here.
+  if (doc["ctl"].is<JsonObject>()) {
+    static int last_ctl_seq = 0;
+    int cseq = doc["ctl"]["seq"] | 0;
+    const char *ccmd = doc["ctl"]["cmd"] | "";
+    if (cseq != 0 && cseq != last_ctl_seq && ccmd[0]) {
+      last_ctl_seq = cseq;
+      if      (!strcmp(ccmd, "mirror_on"))     display_set_mirror(true);
+      else if (!strcmp(ccmd, "mirror_off"))    display_set_mirror(false);
+      else if (!strcmp(ccmd, "mirror_toggle")) display_set_mirror(!display_is_mirrored());
+      else if (!strcmp(ccmd, "rot_toggle"))    display_set_rotated(!display_is_rotated());
+      else if (!strcmp(ccmd, "sat_page0") && g_tileview) lv_obj_set_tile_id(g_tileview, 0, 0, LV_ANIM_ON);
+      else if (!strcmp(ccmd, "sat_page1") && g_tileview) lv_obj_set_tile_id(g_tileview, 1, 0, LV_ANIM_ON);
+      else if (!strcmp(ccmd, "sat_page2") && g_tileview) lv_obj_set_tile_id(g_tileview, 2, 0, LV_ANIM_ON);
+      else if (!strcmp(ccmd, "backlight_on"))  panel_backlight(true);
+      else if (!strcmp(ccmd, "backlight_off")) panel_backlight(false);
+    }
+  }
+
   // Optional verb ack riding the STATE stream -> toast + ABOUT row.
   const char *ack = doc["ack"] | "";
   if (ack[0]) menu_ui_set_ack(ack);
@@ -342,13 +394,23 @@ void setup() {
   lv_init();
 
   // Allocate the draw buffer in PSRAM (ps_malloc -> heap_caps_malloc OPI PSRAM).
-  buf1 = (lv_color_t *)ps_malloc(DRAW_BUF_PX * sizeof(lv_color_t));
-  if (buf1 == nullptr) {
-    Serial.println("[rubysat] PSRAM draw-buf alloc FAILED");
-    // Fall back to internal RAM (smaller); still functional, slower.
-    buf1 = (lv_color_t *)malloc(DRAW_BUF_PX * sizeof(lv_color_t));
+  // Double buffer in INTERNAL SRAM (fast, and off the PSRAM bus the RGB panel
+  // is scanning out -> higher LVGL fps AND less scanout contention). Fall back
+  // to a single PSRAM buffer if internal allocation fails.
+  size_t bytes = DRAW_BUF_PX * sizeof(lv_color_t);
+  buf1 = (lv_color_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  buf2 = (lv_color_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (buf1 && buf2) {
+    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, DRAW_BUF_PX);
+    Serial.println("[rubysat] draw buf: 2x internal SRAM");
+  } else {
+    if (buf1) { heap_caps_free(buf1); }
+    if (buf2) { heap_caps_free(buf2); buf2 = nullptr; }
+    buf1 = (lv_color_t *)ps_malloc(bytes);
+    if (!buf1) buf1 = (lv_color_t *)malloc(bytes);
+    lv_disp_draw_buf_init(&draw_buf, buf1, nullptr, DRAW_BUF_PX);
+    Serial.println("[rubysat] draw buf: 1x fallback");
   }
-  lv_disp_draw_buf_init(&draw_buf, buf1, nullptr, DRAW_BUF_PX);
 
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
@@ -383,6 +445,7 @@ void setup() {
   // 2b) Restore persisted rotation BEFORE building UI.
   g_prefs.begin("rubysat", false);
   g_rot180 = g_prefs.getUChar("rot180", 0) ? true : false;
+  g_mirror = g_prefs.getUChar("mirror", 0) ? true : false;
 
   // 3) Tileview: 3 horizontally-swipeable tiles (GAUGES / STATUS / MENU).
   g_tileview = lv_tileview_create(lv_scr_act());

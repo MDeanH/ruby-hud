@@ -196,6 +196,32 @@ def _forward_hud_page(cmd: str) -> None:
         pass
 
 
+_CTL_PATH = "/dev/shm/rubysat-ctl.json"
+_ctl_state = {"mtime": 0, "doc": None, "until": 0.0}
+
+
+def _poll_ctl() -> None:
+    """Pick up satellite-control commands written by rubyhud (the 7" Settings
+    SATELLITE submenu) and ride them on STATE lines for ~3s (seq-deduped on
+    the Qualia). mtime-gated; never raises."""
+    try:
+        st = os.stat(_CTL_PATH)
+    except OSError:
+        return
+    if st.st_mtime_ns == _ctl_state["mtime"]:
+        return
+    _ctl_state["mtime"] = st.st_mtime_ns
+    try:
+        with open(_CTL_PATH) as fh:
+            doc = json.load(fh)
+        if isinstance(doc, dict) and doc.get("cmd"):
+            _ctl_state["doc"] = {"seq": int(doc.get("seq", 0)),
+                                 "cmd": str(doc.get("cmd"))[:24]}
+            _ctl_state["until"] = time.monotonic() + 3.0
+    except Exception:
+        pass
+
+
 def _handle_command(cmd, ack: dict) -> None:
     """Route one inbound Qualia CMD dict. NEVER raises; logging is bounded.
 
@@ -349,6 +375,12 @@ def main(argv=None) -> int:
                         state["ack"] = ack["text"]
                     else:
                         ack["text"] = None  # TTL expired: drop the key again
+                _poll_ctl()
+                if _ctl_state["doc"] is not None:
+                    if time.monotonic() < _ctl_state["until"]:
+                        state["ctl"] = _ctl_state["doc"]
+                    else:
+                        _ctl_state["doc"] = None
                 line = json.dumps(state, separators=(",", ":"))
             except Exception as exc:
                 _log("build_state failed: %s" % exc)

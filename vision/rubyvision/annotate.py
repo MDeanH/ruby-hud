@@ -19,6 +19,18 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .sources import CAP_H, CAP_W
 
+# cv2.resize is ~10x faster than PIL for the 720p->640 letterbox and the
+# 720p->800x450 preview downscale (measured on Ruby: ~10ms PIL vs ~1ms cv2 per
+# resize). Import is best-effort: if python3-opencv is missing the code falls
+# back to the original PIL path so the package still imports on a bare venv.
+# cv2.resize is channel-order agnostic (it only resamples pixels), so an RGB
+# array stays RGB through resize -- no BGR swap, detector still gets RGB and the
+# preview JPEG stays correct.
+try:
+    import cv2 as _cv2
+except Exception:  # pragma: no cover - bare venv without python3-opencv
+    _cv2 = None
+
 INFER_SIZE = 640
 PREVIEW_W, PREVIEW_H = 800, 450
 
@@ -81,13 +93,21 @@ def letterbox(rgb, size: int = INFER_SIZE):
     scale = min(size / float(w), size / float(h))
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
-    # Resize via PIL (no cv2 dependency).
-    src_img = Image.fromarray(arr[:, :, :3].astype(np.uint8), "RGB")
-    resized = src_img.resize((new_w, new_h), Image.BILINEAR)
+    # Resize via cv2 (fast) with a PIL fallback. cv2.resize preserves channel
+    # order, so the RGB frame stays RGB -- the detector still receives RGB.
+    src3 = arr[:, :, :3]
+    if _cv2 is not None:
+        if src3.dtype != np.uint8:
+            src3 = src3.astype(np.uint8)
+        resized = _cv2.resize(src3, (new_w, new_h),
+                              interpolation=_cv2.INTER_LINEAR)
+    else:
+        src_img = Image.fromarray(src3.astype(np.uint8), "RGB")
+        resized = np.asarray(src_img.resize((new_w, new_h), Image.BILINEAR))
     canvas = np.full((size, size, 3), 114, dtype=np.uint8)  # YOLO gray pad
     padx = (size - new_w) // 2
     pady = (size - new_h) // 2
-    canvas[pady:pady + new_h, padx:padx + new_w] = np.asarray(resized)
+    canvas[pady:pady + new_h, padx:padx + new_w] = resized
     return canvas, float(scale), float(padx), float(pady)
 
 
@@ -124,11 +144,21 @@ def map_box_src_to_preview(box, src_w: int = CAP_W, src_h: int = CAP_H):
 
 
 def to_preview(rgb):
-    """Resize any RGB numpy frame to the 800x450 preview (RGB uint8)."""
+    """Resize any RGB numpy frame to the 800x450 preview (RGB uint8).
+
+    Uses cv2.resize (fast) with a PIL fallback; channel order is preserved, so
+    RGB in -> RGB out and the published JPEG stays correct."""
     arr = np.ascontiguousarray(rgb)
-    img = Image.fromarray(arr[:, :, :3].astype(np.uint8), "RGB")
-    if img.size != (PREVIEW_W, PREVIEW_H):
-        img = img.resize((PREVIEW_W, PREVIEW_H), Image.BILINEAR)
+    src3 = arr[:, :, :3]
+    if src3.shape[1] == PREVIEW_W and src3.shape[0] == PREVIEW_H:
+        return np.ascontiguousarray(src3.astype(np.uint8))
+    if _cv2 is not None:
+        if src3.dtype != np.uint8:
+            src3 = src3.astype(np.uint8)
+        return _cv2.resize(src3, (PREVIEW_W, PREVIEW_H),
+                           interpolation=_cv2.INTER_LINEAR)
+    img = Image.fromarray(src3.astype(np.uint8), "RGB")
+    img = img.resize((PREVIEW_W, PREVIEW_H), Image.BILINEAR)
     return np.asarray(img)
 
 

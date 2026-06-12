@@ -14,6 +14,7 @@ not, so a plain version check never hijacks the screen.
 
 from __future__ import annotations
 
+import os
 import time
 
 from . import gauges, updates
@@ -112,7 +113,49 @@ class SettingsPage(TouchMenu):
                      confirm=self._confirm_rollback, danger=True,
                      on_tap=self._do_rollback),
             MenuItem("VERSION / ABOUT", submenu=self._about_items),
+            MenuItem("SATELLITE", submenu=self._satellite_items),
             MenuItem("SERVICE", submenu=self._service_items),
+        ]
+
+    # -- satellite (4" dash HUD) control ------------------------------------- #
+    _SAT_CTL = "/dev/shm/rubysat-ctl.json"
+    _sat_seq = [0]
+
+    def _sat_send(self, cmd: str):
+        """Atomic write rubysat picks up and rides to the Qualia. Never raises."""
+        try:
+            import json as _json
+            import tempfile as _tf
+            self._sat_seq[0] += 1
+            payload = _json.dumps({"seq": self._sat_seq[0], "cmd": cmd,
+                                   "ts": round(time.time(), 3)})
+            d = os.path.dirname(self._SAT_CTL)
+            fd, tmp = _tf.mkstemp(prefix=".sct-", dir=d)
+            try:
+                os.write(fd, payload.encode("ascii"))
+            finally:
+                os.close(fd)
+            os.replace(tmp, self._SAT_CTL)
+        except Exception:
+            pass
+
+    def _satellite_items(self) -> list:
+        return [
+            MenuItem("HUD MIRROR",
+                     on_tap=lambda ctx: self._sat_send("mirror_toggle")),
+            MenuItem("SHOW GAUGES",
+                     on_tap=lambda ctx: self._sat_send("sat_page0")),
+            MenuItem("SHOW STATUS",
+                     on_tap=lambda ctx: self._sat_send("sat_page1")),
+            MenuItem("SHOW MENU",
+                     on_tap=lambda ctx: self._sat_send("sat_page2")),
+            MenuItem("ROTATE 180",
+                     on_tap=lambda ctx: self._sat_send("rot_toggle")),
+            MenuItem("BACKLIGHT OFF", danger=True,
+                     confirm="Turn the 4-inch backlight off?",
+                     on_tap=lambda ctx: self._sat_send("backlight_off")),
+            MenuItem("BACKLIGHT ON",
+                     on_tap=lambda ctx: self._sat_send("backlight_on")),
         ]
 
     @staticmethod

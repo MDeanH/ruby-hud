@@ -20,7 +20,7 @@ SupplementaryGroups=video render
 # sibling, so /home/michael/hud/../vision always resolves to the LIVE release's
 # vision package and auto-tracks OTA updates (restart rubyvision after an apply).
 Environment=PYTHONUNBUFFERED=1 PYTHONPATH=/home/michael/hud/../vision
-ExecStart=/home/michael/ruby-env/bin/python -m rubyvision --models /home/michael/vision/models --shm /dev/shm/rubyvision --fps 15
+ExecStart=/home/michael/ruby-env/bin/python -m rubyvision --models /home/michael/vision/models --shm /dev/shm/rubyvision --fps 30
 Restart=always
 RestartSec=2
 Nice=5
