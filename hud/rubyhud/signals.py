@@ -56,8 +56,10 @@ ID_AUX = 0x204    # byte0: volts*10, byte1: throttle%, byte2: gear-code, byte3: 
 SIM_IDS = (ID_RPM, ID_SPEED, ID_TEMP, ID_AUX)
 
 # ---- Real 2017 MX-5 ND CAN IDs (reverse-engineered on the car) ----
-MX5_ID_RPM = 0x202     # b0-1 BE /4 = rpm; b4 = throttle % (verified on car)
-MX5_ID_COOLANT = 0x488 # byte 2, raw-40 = coolant degC (best-fit, verify on dash)
+# IDs from the community ND DBC (berumiya/CAN_DBC_6thGenMazda):
+MX5_ID_PCM  = 0x202  # b0-1 rpm*0.25, b2-3 speed km/h*0.01, b4-5 throttle*0.0015625
+MX5_ID_TEMP = 0x420  # b0 coolant(-40)C, b6-7 ambient*0.25-3200 C
+MX5_ID_FUEL = 0x9E   # b5 fuel *0.2 L (ND tank ~45 L)
 
 # If no frame decodes for this long, vehicle data is considered stale: source
 # drops to 'NO DATA' and the live-looking fields blank to None ('--').
@@ -328,21 +330,28 @@ class DataLayer:
                 self._source = "SIM"
 
     def _decode_mx5(self, arb, data: bytes) -> None:
-        """2017 MX-5 ND live decode map (reverse-engineered on the car,
-        2026-06-13). Caller holds _lock. Add signals here as verified."""
+        """2017 MX-5 ND live decode map. Signal definitions from the community
+        DBC (berumiya/CAN_DBC_6thGenMazda, MX5ND_6thGenMazda_HSCAN.dbc), all
+        big-endian (Motorola). RPM cross-checked on the car (rev test). Caller
+        holds _lock.
+
+        NOTE: oil temp and battery voltage are NOT broadcast on HS-CAN (the
+        Sport-gauge oil temp is computed inside the cluster) — unavailable.
+        """
         self._source = "LIVE"
-        # RPM: ID 0x202, bytes 0-1 BE / 4. Verified by rev test: idle raw
-        # 3291 (=822 rpm), ~3k rev raw 11635 (=2908 rpm).
-        if arb == MX5_ID_RPM and len(data) >= 5:
-            self._rpm = float((data[0] << 8) | data[1]) / 4.0
-            # Throttle/accelerator: byte 4 = 0-100% (idle 0; pedal-press scan
-            # showed pair b4-5 = b4*256, i.e. b4 is the integer percent).
-            self._throttle_pct = float(data[4])
-        # Coolant: ID 0x488 byte 2, raw - 40 = degC (warm raw 0x82=130 -> 90C).
-        elif arb == MX5_ID_COOLANT and len(data) >= 3:
-            self._coolant_c = float(data[2]) - 40.0
-        # Speed (MPH): not yet identified (car parked during rev test) ->
-        # leave None so it shows '--' rather than a bogus number.
+        # ---- 0x202 HS_PCM: RPM + vehicle speed + accelerator ----
+        if arb == MX5_ID_PCM and len(data) >= 6:
+            self._rpm = float((data[0] << 8) | data[1]) * 0.25      # b0-1 *0.25
+            kmh = float((data[2] << 8) | data[3]) * 0.01            # b2-3 *0.01
+            self._speed_mph = kmh * 0.621371
+            self._throttle_pct = float((data[4] << 8) | data[5]) * 0.0015625
+        # ---- 0x420 HS_PCM: coolant (b0 -40) + ambient (b6-7 *0.25 -3200) ----
+        elif arb == MX5_ID_TEMP and len(data) >= 8:
+            self._coolant_c = float(data[0]) - 40.0
+        # ---- 0x9E HS_IC: fuel tank (b5 *0.2 L -> % of 45 L ND tank) ----
+        elif arb == MX5_ID_FUEL and len(data) >= 6:
+            liters = float(data[5]) * 0.2
+            self._fuel_pct = max(0.0, min(100.0, liters / 45.0 * 100.0))
 
     def _record_raw(self, arb, data: bytes, now: float) -> None:
         """Track raw traffic for the CAN page. Caller holds _lock."""
