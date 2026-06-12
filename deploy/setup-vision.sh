@@ -22,7 +22,16 @@ VISION_DATA="${MICHAEL_HOME}/vision"
 # for this release. A hardcoded /home/michael/hud-repo/vision would install the
 # stale one-time bootstrap clone (or fail if it was removed post-install).
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VISION_PKG="$(cd "${HERE}/../vision" 2>/dev/null && pwd || echo "${HERE}/../vision")"
+# Pin to the STABLE clone (/home/michael/hud-repo/vision), NOT a frozen A/B
+# release worktree. The editable install writes an absolute import path; if it
+# points at hud-releases/<tag>/vision the service silently runs stale vision
+# code forever (this caused dets=0 despite HEF fixes — fixed 2026-06-12).
+HUD_REPO_VISION="/home/michael/hud-repo/vision"
+if [ -d "${HUD_REPO_VISION}" ]; then
+    VISION_PKG="${HUD_REPO_VISION}"
+else
+    VISION_PKG="$(cd "${HERE}/../vision" 2>/dev/null && pwd || echo "${HERE}/../vision")"
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "setup-vision.sh must run as root (sudo)" >&2
