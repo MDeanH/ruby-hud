@@ -131,7 +131,22 @@ static uint32_t last_connect_try = 0;     // backoff clock
 static uint32_t connect_backoff = 500;    // ms, grows to a cap
 static const uint32_t BACKOFF_MAX = 8000;
 
-static String rxbuf;                      // partial-line accumulator
+static String rxbuf;                      // partial-line accumulator (TCP)
+
+// ---- Transport selection: USB (CDC to the Pi) vs Wi-Fi/TCP ----------------- //
+// The Pi serves STATE on BOTH transports at once; the satellite picks. linkmode
+// (NVS "linkmode"): AUTO prefers USB when STATE is arriving on it, else Wi-Fi;
+// USB / WIFI force one. Anonymous enums -> the constants are plain ints, so no
+// custom type appears in any function signature (sidesteps Arduino's auto-
+// prototype/type-ordering trap).
+enum { LINK_AUTO = 0, LINK_USB = 1, LINK_WIFI = 2 };
+enum { TR_NONE = 0, TR_USB = 1, TR_WIFI = 2 };
+static uint8_t  g_linkmode = LINK_AUTO;
+static uint8_t  g_active   = TR_NONE;     // transport currently driving the UI
+static uint32_t usb_last_state_ms  = 0;   // last STATE line seen on USB
+static uint32_t wifi_last_state_ms = 0;   // last STATE line seen on TCP
+static String   usb_rxbuf;                // partial-line accumulator (USB)
+static const uint32_t LINK_FRESH_MS = 2500;
 
 // --------------------------------------------------------------------------- //
 // Tileview (3 swipeable pages) + rotation persistence + RX-rate accounting
@@ -258,6 +273,51 @@ static void resolve_ruby() {
   }
 }
 
+// Which transport should drive the UI right now. AUTO prefers USB when STATE
+// is freshly arriving on it; otherwise Wi-Fi (and Wi-Fi while nothing is fresh,
+// so the TCP path keeps trying). USB/WIFI force one regardless of freshness.
+static int decide_active() {
+  uint32_t now = millis();
+  bool usb_fresh  = usb_last_state_ms  && (now - usb_last_state_ms)  < LINK_FRESH_MS;
+  bool wifi_fresh = wifi_last_state_ms && (now - wifi_last_state_ms) < LINK_FRESH_MS;
+  if (g_linkmode == LINK_USB)  return TR_USB;
+  if (g_linkmode == LINK_WIFI) return TR_WIFI;
+  if (usb_fresh)  return TR_USB;
+  if (wifi_fresh) return TR_WIFI;
+  return TR_WIFI;
+}
+
+// Menu accessors (extern-visible from menu_ui.cpp).
+int  link_mode_get()   { return g_linkmode; }
+void link_mode_cycle() {
+  g_linkmode = (g_linkmode + 1) % 3;
+  g_prefs.putUChar("linkmode", g_linkmode);
+}
+const char *link_mode_str() {
+  return (g_linkmode == LINK_USB) ? "USB"
+       : (g_linkmode == LINK_WIFI) ? "WIFI" : "AUTO";
+}
+const char *link_active_str() {
+  return (g_active == TR_USB) ? "USB"
+       : (g_active == TR_WIFI) ? "WiFi" : "--";
+}
+
+// Drain USB CDC bytes coming from the Pi; split on '\n', parse each STATE line.
+// Runs every loop regardless of the active transport so AUTO can detect a live
+// USB link by its STATE arriving here.
+static void serial_pump() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n') {
+      handle_state_line(usb_rxbuf, true);
+      usb_rxbuf = "";
+    } else if (c != '\r') {
+      if (usb_rxbuf.length() < 1024) usb_rxbuf += c;
+      else usb_rxbuf = "";                       // drop pathological line
+    }
+  }
+}
+
 // Non-blocking TCP connect with exponential backoff.
 static void net_pump() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -293,7 +353,7 @@ static void net_pump() {
   while (sock.available() > 0) {
     char c = (char)sock.read();
     if (c == '\n') {
-      handle_state_line(rxbuf);
+      handle_state_line(rxbuf, false);
       rxbuf = "";
     } else if (c != '\r') {
       if (rxbuf.length() < 1024) rxbuf += c;    // guard against runaway lines
@@ -302,12 +362,21 @@ static void net_pump() {
   }
 }
 
-// Parse a STATE JSON line and push values into the UI.
-static void handle_state_line(const String &line) {
+// Parse a STATE JSON line and push values into the UI. `from_usb` tags the
+// source so AUTO can track which transport is live; only the transport that
+// decide_active() selects actually drives the display + consumes ctl.
+static void handle_state_line(const String &line, bool from_usb) {
   if (line.length() < 2) return;                // ignore blank/keepalive
   StaticJsonDocument<768> doc;
   DeserializationError err = deserializeJson(doc, line);
   if (err) return;                              // tolerate junk silently
+
+  uint32_t now_ms = millis();
+  if (from_usb) usb_last_state_ms = now_ms; else wifi_last_state_ms = now_ms;
+  g_active = (uint8_t)decide_active();
+  bool active = (from_usb && g_active == TR_USB) ||
+                (!from_usb && g_active == TR_WIFI);
+  if (!active) return;                          // other transport is in charge
 
   StateView s;
   s.rpm      = doc["rpm"].isNull()      ? -1   : (int)doc["rpm"];
@@ -380,16 +449,19 @@ void net_force_reconnect() {
 }
 
 static void send_cmd(const char *cmd, int x, int y) {
-  if (!sock.connected()) return;
   StaticJsonDocument<96> doc;
   doc["cmd"] = cmd;
   doc["x"] = x;
   doc["y"] = y;
   char out[96];
   size_t n = serializeJson(doc, out, sizeof(out));
-  if (n > 0 && n < sizeof(out) - 1) {
-    out[n] = '\n';
-    sock.write((const uint8_t *)out, n + 1);
+  if (n == 0 || n >= sizeof(out) - 1) return;
+  out[n] = '\n';
+  // Route to whichever transport is currently driving the link.
+  if (g_active == TR_USB) {
+    Serial.write((const uint8_t *)out, n + 1);   // to the Pi over USB CDC
+  } else if (sock.connected()) {
+    sock.write((const uint8_t *)out, n + 1);      // to the Pi over TCP/Wi-Fi
   }
 }
 
@@ -398,6 +470,7 @@ static void send_cmd(const char *cmd, int x, int y) {
 // --------------------------------------------------------------------------- //
 void setup() {
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(10);   // never block the gauge loop if no USB host reads
   delay(200);
   Serial.println("[rubysat] boot");
 
@@ -476,6 +549,8 @@ void setup() {
     strncpy(g_wifi_pass, np.c_str(), sizeof(g_wifi_pass) - 1);
     g_wifi_pass[sizeof(g_wifi_pass) - 1] = '\0';
   }
+  // Link transport preference (USB default-when-present is the AUTO behavior).
+  g_linkmode = g_prefs.getUChar("linkmode", LINK_AUTO);
 
   // 3) Tileview: 3 horizontally-swipeable tiles (GAUGES / STATUS / MENU).
   g_tileview = lv_tileview_create(lv_scr_act());
@@ -524,6 +599,11 @@ void loop() {
 
   // b) TCP connect/receive (non-blocking).
   net_pump();
+
+  // b2) USB CDC receive (non-blocking) + recompute the active transport so a
+  //     dropped link (e.g. USB unplugged) falls back per linkmode this tick.
+  serial_pump();
+  g_active = (uint8_t)decide_active();
 
   // c) Staleness: if no STATE for >2s, flag link red even if socket is up.
   if (millis() - last_state_ms > 2000) {

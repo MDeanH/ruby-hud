@@ -28,8 +28,13 @@ extern bool display_is_mirrored();
 extern void        wifi_save_creds(const char *ssid, const char *pass);
 extern const char *wifi_cfg_ssid();
 extern const char *wifi_status_str();
+// Link transport (USB vs Wi-Fi; defined in the .ino)
+extern int         link_mode_get();
+extern void        link_mode_cycle();
+extern const char *link_mode_str();
+extern const char *link_active_str();
 
-#define FW_VERSION "3.5.0-sat"
+#define FW_VERSION "3.6.0-sat"
 
 // --- palette (mirror ui.cpp) ----------------------------------------------- //
 #define M_BG      lv_color_hex(0x07090c)
@@ -44,7 +49,7 @@ extern const char *wifi_status_str();
 #define M_DANGER  lv_color_hex(0xff3b30)
 
 #define ROW_H 64
-#define MAX_ROWS 8
+#define MAX_ROWS 10
 
 enum RowType { ROW_ACTION, ROW_SUBMENU, ROW_INFO, ROW_BACK };
 
@@ -86,6 +91,8 @@ static const char *vf_rot()    { return display_is_rotated() ? "ON" : "off"; }
 static const char *vf_mir()    { return display_is_mirrored() ? "ON" : "off"; }
 static const char *vf_wssid()  { const char *s = wifi_cfg_ssid(); return (s && s[0]) ? s : "--"; }
 static const char *vf_wstat()  { return wifi_status_str(); }
+static const char *vf_link()   { return link_mode_str(); }     // AUTO/USB/WIFI
+static const char *vf_active()  { return link_active_str(); }   // USB/WiFi/--
 
 // ------------------------------------------------------------------ menus    //
 // indices: 0 root, 1 RUBY, 2 DISPLAY, 3 CONNECTION, 4 ABOUT, 5 WI-FI
@@ -112,14 +119,16 @@ static Menu g_menus[6] = {
       { ROW_ACTION, "Backlight test","@blt",  false, false, 0, nullptr },
   }, 4 },
   { "CONNECTION", {
-      { ROW_BACK,   "< back",     nullptr,    false, false, 0, nullptr },
-      { ROW_INFO,   "SSID",       nullptr,    false, false, 0, vf_ssid },
-      { ROW_INFO,   "My IP",      nullptr,    false, false, 0, vf_myip },
-      { ROW_INFO,   "Ruby IP",    nullptr,    false, false, 0, vf_rubyip },
-      { ROW_INFO,   "RSSI",       nullptr,    false, false, 0, vf_rssi },
-      { ROW_INFO,   "RX rate",    nullptr,    false, false, 0, vf_rxrate },
-      { ROW_ACTION, "Reconnect",  "@recon",   false, false, 0, nullptr },
-  }, 7 },
+      { ROW_BACK,   "< back",     nullptr,     false, false, 0, nullptr },
+      { ROW_ACTION, "Link",       "@linkmode", false, false, 0, vf_link },
+      { ROW_INFO,   "Active",     nullptr,     false, false, 0, vf_active },
+      { ROW_INFO,   "SSID",       nullptr,     false, false, 0, vf_ssid },
+      { ROW_INFO,   "My IP",      nullptr,     false, false, 0, vf_myip },
+      { ROW_INFO,   "Ruby IP",    nullptr,     false, false, 0, vf_rubyip },
+      { ROW_INFO,   "RSSI",       nullptr,     false, false, 0, vf_rssi },
+      { ROW_INFO,   "RX rate",    nullptr,     false, false, 0, vf_rxrate },
+      { ROW_ACTION, "Reconnect",  "@recon",    false, false, 0, nullptr },
+  }, 9 },
   { "ABOUT", {
       { ROW_BACK, "< back",   nullptr, false, false, 0, nullptr },
       { ROW_INFO, "Firmware", nullptr, false, false, 0, vf_fw },
@@ -410,6 +419,7 @@ static void do_action(int menu_idx, int row_idx) {
     else if (!strcmp(row.verb, "@rot"))   { display_set_rotated(!display_is_rotated()); show_toast("rotated"); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@blt")) { panel_backlight(false); lv_timer_handler(); delay(250); panel_backlight(true); show_toast("backlight"); }
     else if (!strcmp(row.verb, "@recon")) { net_force_reconnect(); show_toast("reconnecting"); }
+    else if (!strcmp(row.verb, "@linkmode")) { link_mode_cycle(); show_toast(link_mode_str()); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@wifiedit")) { open_wifi_edit(nullptr); }
     else if (!strcmp(row.verb, "@wifiscan")) { open_wifi_scan(); }
     return;

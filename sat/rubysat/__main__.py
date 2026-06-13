@@ -41,6 +41,7 @@ import sys
 import time
 
 from .publisher import TcpStateServer
+from .serial_link import SerialStateLink
 from .state import build_state
 
 _LOG = "/tmp/rubysat.log"
@@ -132,9 +133,10 @@ def _queue_update_request(cmd: str, ref=None) -> bool:
 
     Prefers rubyhud.updates.request() (the canonical writer; import guarded at
     use-site). When rubyhud is not importable (build host, broken install) it
-    falls back to a self-contained atomic write of {"cmd":...[,"ref":...]}
-    into <update-dir>/queue: mkstemp in-dir with a DOT-PREFIXED temp name, then
-    os.replace() into the final *.req name (the path unit watches the queue dir)."""
+    falls back to a self-contained atomic write of {"cmd":...[,"ref":...],
+    "ts":...} into <update-dir>/queue: mkstemp in-dir with a DOT-PREFIXED temp
+    name (the path unit's *.req glob must never fire on a half-written file)
+    then os.replace() into the final *.req name."""
     try:
         try:
             from rubyhud import updates
@@ -330,6 +332,11 @@ def main(argv=None) -> int:
         return 1
     _log("rubysat listening on 0.0.0.0:%d at %.1f Hz" % (args.port, hz))
 
+    # USB-serial link to a directly-cabled Qualia. Additive to the TCP server:
+    # the Pi always serves both; the satellite firmware picks USB or Wi-Fi.
+    serial_link = SerialStateLink(log=_log)
+    serial_link.start()
+
     snapshot_fn, stop_fn = _make_snapshot_source(args.channel, args.novehicle)
     vision = _VisionCache()
 
@@ -387,17 +394,25 @@ def main(argv=None) -> int:
                 continue
 
             server.broadcast(line)
+            serial_link.broadcast(line)        # same STATE over the USB cable
             seq += 1
             last_emit = now
 
-            # Drain inbound CMD lines: ruby_* verbs map to updater requests
-            # (+ ack); page_prev/page_next/tap and unknowns stay log-only.
+            # Drain inbound CMD lines from BOTH transports: ruby_* verbs map to
+            # updater requests (+ ack); page_prev/page_next/tap and unknowns
+            # stay log-only.
             for cmd in server.commands():
+                _handle_command(cmd, ack)
+            for cmd in serial_link.commands():
                 _handle_command(cmd, ack)
     finally:
         _log("rubysat shutting down")
         try:
             server.stop()
+        except Exception:
+            pass
+        try:
+            serial_link.stop()
         except Exception:
             pass
         try:
