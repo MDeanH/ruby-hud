@@ -2,7 +2,12 @@
 Description=Watch the ruby-update request queue
 
 [Path]
-PathExistsGlob=/run/ruby-update/queue/*.req
+# PathExistsGlob only fires on the no-match -> match transition. If a
+# concurrent --consume exits without draining (lock busy), the .req file
+# remains and the glob stays matched so later checks never trigger again.
+# PathModified re-fires on every enqueue/dequeue.
+PathModified=/run/ruby-update/queue
+Unit=ruby-updated.service
 
 [Install]
 WantedBy=multi-user.target

@@ -66,8 +66,8 @@ def _cached(key, ttl, fn):
 def request(cmd: str, ref: str | None = None) -> bool:
     """Queue {"cmd": cmd[, "ref": ref]} for ruby-updated; atomic write.
 
-    The temp name starts with '.' so the .path unit's *.req glob only fires
-    once the finished file is renamed into place. Returns False on any
+    The temp name starts with '.' so the .path unit only fires once the
+    finished file is renamed into place. Returns False on any failure
     failure (missing queue dir, PermissionError, full disk, ...)."""
     qdir = os.path.join(_update_dir(), "queue")
     try:
@@ -82,6 +82,9 @@ def request(cmd: str, ref: str | None = None) -> bool:
             dst = os.path.join(qdir, "%d-%d.req"
                                % (time.time_ns() // 1000000, os.getpid()))
             os.replace(tmp, dst)
+            udir = _update_dir()
+            _cache.pop(("status", udir), None)
+            _cache.pop(("lines", udir), None)
         except Exception:
             try:
                 os.unlink(tmp)

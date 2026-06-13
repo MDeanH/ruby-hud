@@ -205,11 +205,12 @@ sync_file() {  # <src> <dst> <mode>: 0 if installed/changed, 1 otherwise
 }
 
 self_install() {  # <release-dir>: refresh handler + unit files from release
-    local d=$1/deploy changed=0
+    local d=$1/deploy changed=0 path_changed=0
     if sync_file "$d/ruby-updated" "$SBIN_SELF" 0755; then
         set_status finalizing "installed new $SBIN_SELF" true
     fi
-    sync_file "$d/ruby-updated.path" /etc/systemd/system/ruby-updated.path 0644 && changed=1
+    sync_file "$d/ruby-updated.path" /etc/systemd/system/ruby-updated.path 0644 \
+        && { changed=1; path_changed=1; }
     sync_file "$d/ruby-updated.service" /etc/systemd/system/ruby-updated.service 0644 && changed=1
     sync_file "$d/ruby-rollback.service" /etc/systemd/system/ruby-rollback.service 0644 && changed=1
     sync_file "$d/rubyhud.service" /etc/systemd/system/rubyhud.service 0644 && changed=1
@@ -229,6 +230,9 @@ self_install() {  # <release-dir>: refresh handler + unit files from release
     if [ "$changed" -eq 1 ]; then
         set_status finalizing "unit files changed, daemon-reload" true
         systemctl daemon-reload
+        if [ "$path_changed" -eq 1 ]; then
+            systemctl restart ruby-updated.path >/dev/null 2>&1 || true
+        fi
     fi
     # rubyvision runs the new release's code via the /home/michael/hud symlink;
     # restart it (only if already running) so the freshly-deployed code/unit
@@ -579,6 +583,10 @@ do_consume() {  # drain the queue, oldest first; delete BEFORE executing
         done
         [ "$progressed" -eq 1 ] || break
     done
+    # A request may land while the last file was being processed; kick again.
+    if compgen -G "$QUEUE/*.req" > /dev/null; then
+        systemctl start ruby-updated.service 2>/dev/null || true
+    fi
     return 0
 }
 
@@ -609,7 +617,15 @@ if [ ! -d "$STATE_DIR" ]; then
 fi
 
 exec 9>>"$LOCK"
-if ! flock -n 9; then
+if [ "$VERB" = "--consume" ]; then
+    # Wait for a long apply/rollback to finish instead of exiting and
+    # leaving .req files stranded (PathExistsGlob would not re-trigger).
+    if ! flock -w 600 9; then
+        printf '{"ts":%s,"phase":"error","msg":"timed out waiting for updater lock","ok":false}\n' \
+            "$(date +%s)"
+        exit 1
+    fi
+elif ! flock -n 9; then
     set_status busy "another ruby-updated instance holds the lock" false
     exit 1
 fi
