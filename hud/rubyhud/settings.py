@@ -200,10 +200,12 @@ class SettingsPage(TouchMenu):
             ts = float((st or {}).get("ts") or 0)
         except Exception:
             ts = 0.0
-        if (self._check_wall is not None
-                and time.time() - self._check_wall < 30.0
-                and ts < self._check_wall):
-            return "checking..."
+        if self._check_wall is not None:
+            age = time.time() - self._check_wall
+            if ts < self._check_wall:
+                if age < 30.0:
+                    return "checking..."
+                return "offline"
         if st is None:
             return "offline"
         ph = _phase(st)
