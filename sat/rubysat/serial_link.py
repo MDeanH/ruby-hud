@@ -18,9 +18,11 @@ of broadcast()/commands(): a serial hiccup must not kill the publish loop.
 
 from __future__ import annotations
 
+import errno
 import glob
 import json
 import os
+import select
 import time
 
 try:
@@ -32,6 +34,7 @@ except Exception:                      # non-POSIX / minimal build: degrade
 
 RETRY_S = 2.0
 MAX_BUF = 8192
+WRITE_BUDGET_S = 0.15   # max time broadcast() may spend draining TX backpressure
 _BYID = "/dev/serial/by-id"
 
 
@@ -55,7 +58,8 @@ class SerialStateLink:
 
     def __init__(self, log=None):
         self._fd: int | None = None
-        self._buf = b""
+        self._buf = b""           # inbound (CMD) partial-line accumulator
+        self._wbuf = b""          # outbound (STATE) remainder after a short write
         self._last_try = 0.0
         self._path: str | None = None
         self._log = log or (lambda *_: None)
@@ -102,23 +106,52 @@ class SerialStateLink:
             self._log("serial link down (%s)" % self._path)
         self._fd = None
         self._buf = b""
+        self._wbuf = b""
 
     # -- outbound STATE --------------------------------------------------- #
     def broadcast(self, line: str) -> int:
-        """Write one JSON record to the cabled satellite. Returns 1 if written,
-        0 if no port / write failed. Never raises."""
+        """Write one JSON record to the cabled satellite. Returns 1 if the
+        buffer fully drained, 0 if no port / a remainder is left buffered /
+        the link dropped. Never raises and never blocks the publish loop for
+        more than ~WRITE_BUDGET_S.
+
+        Robust like sock.sendall(): honors short writes (the unwritten tail is
+        kept in _wbuf and prepended next call, so a truncated JSON line never
+        reaches the firmware) and treats EAGAIN/EWOULDBLOCK as transient TX
+        backpressure (keep the fd; do NOT tear down a healthy cable). Only a
+        real device error (EIO/ENODEV/ENXIO/EBADF) closes + re-detects."""
         if self._fd is None:
             self._open()
             if self._fd is None:
                 return 0
         if not line.endswith("\n"):
             line = line + "\n"
-        try:
-            os.write(self._fd, line.encode("utf-8"))
-            return 1
-        except Exception:
-            self._close()             # unplugged / EIO -> drop, re-detect later
-            return 0
+        self._wbuf += line.encode("utf-8")
+        if len(self._wbuf) > MAX_BUF:
+            # Cable persistently slower than the publish rate: drop the backlog
+            # and resync on this line (one corrupt line, then clean framing).
+            self._wbuf = line.encode("utf-8")
+        deadline = time.monotonic() + WRITE_BUDGET_S
+        while self._wbuf:
+            try:
+                n = os.write(self._fd, self._wbuf)
+                self._wbuf = self._wbuf[n:]
+            except (BlockingIOError, InterruptedError):
+                if time.monotonic() >= deadline:
+                    return 0          # keep remainder buffered; never block long
+                select.select([], [self._fd], [], 0.02)
+            except OSError as exc:
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    if time.monotonic() >= deadline:
+                        return 0
+                    select.select([], [self._fd], [], 0.02)
+                    continue
+                self._close()         # EIO/ENODEV/ENXIO/EBADF: real unplug
+                return 0
+            except Exception:
+                self._close()
+                return 0
+        return 1
 
     # -- inbound commands ------------------------------------------------- #
     def commands(self) -> list:

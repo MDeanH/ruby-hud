@@ -38,7 +38,7 @@ void menu_ui_tick();
 
 // Forward declarations (the .ino is one translation unit; declare before use so
 // ordering / custom-type signatures never depend on the IDE's auto-prototyper).
-static void handle_state_line(const String &line);
+static void handle_state_line(const String &line, bool from_usb);
 static void send_cmd(const char *cmd, int x, int y);
 
 // --------------------------------------------------------------------------- //
@@ -302,6 +302,12 @@ const char *link_active_str() {
        : (g_active == TR_WIFI) ? "WiFi" : "--";
 }
 
+// Backlight on/off (runtime only -- deliberately NOT persisted, so a power
+// cycle always comes back lit; persisting "off" would brick the screen at boot).
+static bool g_backlight = true;
+void backlight_set(bool on) { g_backlight = on; panel_backlight(on); }
+bool backlight_is_on() { return g_backlight; }
+
 // Drain USB CDC bytes coming from the Pi; split on '\n', parse each STATE line.
 // Runs every loop regardless of the active transport so AUTO can detect a live
 // USB link by its STATE arriving here.
@@ -401,8 +407,15 @@ static void handle_state_line(const String &line, bool from_usb) {
 
   // Satellite control from the 7" Ruby HUD: transient {"ctl":{"seq":N,
   // "cmd":"..."}} rides STATE lines for a few seconds; seq-deduped here.
+  // Detect a Pi/publisher restart (top-level STATE seq resets toward 0) and
+  // clear the remembered ctl seq, so the first ctl after a restart isn't
+  // swallowed by a stale-seq collision.
+  static int last_ctl_seq = 0;
+  static int last_top_seq = -1;
+  int top_seq = doc["seq"] | 0;
+  if (top_seq < last_top_seq) last_ctl_seq = 0;
+  last_top_seq = top_seq;
   if (doc["ctl"].is<JsonObject>()) {
-    static int last_ctl_seq = 0;
     int cseq = doc["ctl"]["seq"] | 0;
     const char *ccmd = doc["ctl"]["cmd"] | "";
     if (cseq != 0 && cseq != last_ctl_seq && ccmd[0]) {
@@ -414,14 +427,26 @@ static void handle_state_line(const String &line, bool from_usb) {
       else if (!strcmp(ccmd, "sat_page0") && g_tileview) lv_obj_set_tile_id(g_tileview, 0, 0, LV_ANIM_ON);
       else if (!strcmp(ccmd, "sat_page1") && g_tileview) lv_obj_set_tile_id(g_tileview, 1, 0, LV_ANIM_ON);
       else if (!strcmp(ccmd, "sat_page2") && g_tileview) lv_obj_set_tile_id(g_tileview, 2, 0, LV_ANIM_ON);
-      else if (!strcmp(ccmd, "backlight_on"))  panel_backlight(true);
-      else if (!strcmp(ccmd, "backlight_off")) panel_backlight(false);
+      else if (!strcmp(ccmd, "sat_prev") && g_tileview) {
+        int i = lv_obj_get_index(lv_tileview_get_tile_act(g_tileview));
+        if (i > 0) lv_obj_set_tile_id(g_tileview, i - 1, 0, LV_ANIM_ON);
+      }
+      else if (!strcmp(ccmd, "sat_next") && g_tileview) {
+        int i = lv_obj_get_index(lv_tileview_get_tile_act(g_tileview));
+        if (i < 2) lv_obj_set_tile_id(g_tileview, i + 1, 0, LV_ANIM_ON);
+      }
+      else if (!strcmp(ccmd, "backlight_on"))  backlight_set(true);
+      else if (!strcmp(ccmd, "backlight_off")) backlight_set(false);
     }
   }
 
-  // Optional verb ack riding the STATE stream -> toast + ABOUT row.
+  // Optional verb ack riding the STATE stream -> toast + ABOUT row. Edge-dedupe:
+  // the ack repeats on every STATE line for ~3s, so only surface it when it
+  // first appears (or reappears after clearing), not ~45x.
+  static String last_ack_seen = "";
   const char *ack = doc["ack"] | "";
-  if (ack[0]) menu_ui_set_ack(ack);
+  if (ack[0] && last_ack_seen != ack) menu_ui_set_ack(ack);
+  last_ack_seen = ack;
 
   // ~1 Hz: refresh STATUS tile values + RX rate.
   uint32_t now = millis();
@@ -605,8 +630,12 @@ void loop() {
   serial_pump();
   g_active = (uint8_t)decide_active();
 
-  // c) Staleness: if no STATE for >2s, flag link red even if socket is up.
-  if (millis() - last_state_ms > 2000) {
+  // c) Staleness: if no STATE for >2s on EITHER transport, flag link red. Using
+  //    the freshest source (not just the active one) avoids a spurious red flash
+  //    during a USB<->Wi-Fi failover.
+  uint32_t fresh = (usb_last_state_ms > wifi_last_state_ms) ? usb_last_state_ms
+                                                            : wifi_last_state_ms;
+  if (millis() - fresh > 2000) {
     ui_set_link(false);
   }
 

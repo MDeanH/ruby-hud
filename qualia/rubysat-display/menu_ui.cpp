@@ -24,6 +24,8 @@ extern void display_set_rotated(bool rot180);   // persists in NVS
 extern bool display_is_rotated();
 extern void display_set_mirror(bool on);        // windshield HUD flip (NVS)
 extern bool display_is_mirrored();
+extern void backlight_set(bool on);             // panel backlight (runtime)
+extern bool backlight_is_on();
 // Wi-Fi config (NVS-backed; defined in the .ino)
 extern void        wifi_save_creds(const char *ssid, const char *pass);
 extern const char *wifi_cfg_ssid();
@@ -34,7 +36,7 @@ extern void        link_mode_cycle();
 extern const char *link_mode_str();
 extern const char *link_active_str();
 
-#define FW_VERSION "3.6.0-sat"
+#define FW_VERSION "3.7.0-sat"
 
 // --- palette (mirror ui.cpp) ----------------------------------------------- //
 #define M_BG      lv_color_hex(0x07090c)
@@ -89,6 +91,7 @@ static const char *vf_uptime() { unsigned s=millis()/1000; snprintf(s_buf[4],48,
 static const char *vf_ack()    { return s_lastack; }
 static const char *vf_rot()    { return display_is_rotated() ? "ON" : "off"; }
 static const char *vf_mir()    { return display_is_mirrored() ? "ON" : "off"; }
+static const char *vf_bl()     { return backlight_is_on() ? "ON" : "off"; }
 static const char *vf_wssid()  { const char *s = wifi_cfg_ssid(); return (s && s[0]) ? s : "--"; }
 static const char *vf_wstat()  { return wifi_status_str(); }
 static const char *vf_link()   { return link_mode_str(); }     // AUTO/USB/WIFI
@@ -114,10 +117,11 @@ static Menu g_menus[6] = {
   }, 6 },
   { "DISPLAY", {
       { ROW_BACK,   "< back",        nullptr, false, false, 0, nullptr },
+      { ROW_ACTION, "Backlight",     "@bl",   false, false, 0, vf_bl },
       { ROW_ACTION, "HUD Mirror",    "@mir",  false, false, 0, vf_mir },
       { ROW_ACTION, "Rotate 180",    "@rot",  false, false, 0, vf_rot },
       { ROW_ACTION, "Backlight test","@blt",  false, false, 0, nullptr },
-  }, 4 },
+  }, 5 },
   { "CONNECTION", {
       { ROW_BACK,   "< back",     nullptr,     false, false, 0, nullptr },
       { ROW_ACTION, "Link",       "@linkmode", false, false, 0, vf_link },
@@ -249,9 +253,11 @@ static lv_obj_t *s_ta_ssid   = nullptr;
 static lv_obj_t *s_ta_pass   = nullptr;
 static lv_obj_t *s_kb        = nullptr;
 static char      s_scan[16][40];          // SSIDs captured by the last scan
+static bool      s_scan_pending = false;  // async WiFi scan in flight
 
 static void open_wifi_edit(const char *prefill_ssid);
 static void open_wifi_scan();
+static void build_scan_overlay(int n);
 
 static void wifi_overlay_close() {
   if (s_wifi_scr) { lv_obj_del(s_wifi_scr); s_wifi_scr = nullptr; }
@@ -277,10 +283,12 @@ static void ta_focus_cb(lv_event_t *e) {
 }
 
 static void pass_eye_cb(lv_event_t *e) {
-  (void)e;
-  if (s_ta_pass)
-    lv_textarea_set_password_mode(s_ta_pass,
-                                  !lv_textarea_get_password_mode(s_ta_pass));
+  if (!s_ta_pass) return;
+  bool hidden = lv_textarea_get_password_mode(s_ta_pass);   // true = masked now
+  lv_textarea_set_password_mode(s_ta_pass, !hidden);
+  lv_obj_t *btn = lv_event_get_target(e);
+  lv_obj_t *lbl = lv_obj_get_child(btn, 0);                 // the "show"/"hide" label
+  if (lbl) lv_label_set_text(lbl, hidden ? "hide" : "show");
 }
 
 static void wifi_scan_pick_cb(lv_event_t *e) {
@@ -360,10 +368,10 @@ static void open_wifi_edit(const char *prefill_ssid) {
   lv_obj_add_event_cb(s_kb, wifi_cancel_cb, LV_EVENT_CANCEL, nullptr);// X closes
 }
 
-static void open_wifi_scan() {
-  show_toast("scanning...");
-  lv_timer_handler();              // paint the toast before the blocking scan
-  int n = WiFi.scanNetworks();     // blocking ~2-4s; acceptable on a button tap
+// Build the results overlay from a completed scan (n = count, or <0 = none).
+// Split out from the kick so the 2-4s scan can run asynchronously (polled in
+// menu_ui_tick) instead of blocking the gauge loop.
+static void build_scan_overlay(int n) {
   wifi_overlay_close();
 
   s_wifi_scr = lv_obj_create(lv_layer_top());
@@ -411,13 +419,23 @@ static void open_wifi_scan() {
   if (n > 0) WiFi.scanDelete();
 }
 
+// Kick an ASYNC scan and return immediately; menu_ui_tick() polls for the
+// result and calls build_scan_overlay() so the gauge/STATE loop never freezes.
+static void open_wifi_scan() {
+  show_toast("scanning...");
+  WiFi.scanDelete();               // clear any stale result
+  WiFi.scanNetworks(true);         // async: returns at once, result via poll
+  s_scan_pending = true;
+}
+
 static void do_action(int menu_idx, int row_idx) {
   Row &row = g_menus[menu_idx].rows[row_idx];
   if (row.verb && row.verb[0] == '@') {
     // local action
     if (!strcmp(row.verb, "@mir"))   { display_set_mirror(!display_is_mirrored()); show_toast("HUD mirror"); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@rot"))   { display_set_rotated(!display_is_rotated()); show_toast("rotated"); build_list(menu_idx); }
-    else if (!strcmp(row.verb, "@blt")) { panel_backlight(false); lv_timer_handler(); delay(250); panel_backlight(true); show_toast("backlight"); }
+    else if (!strcmp(row.verb, "@bl")) { backlight_set(!backlight_is_on()); show_toast(backlight_is_on() ? "backlight on" : "backlight off"); build_list(menu_idx); }
+    else if (!strcmp(row.verb, "@blt")) { bool prev = backlight_is_on(); panel_backlight(false); delay(250); backlight_set(prev); show_toast("backlight"); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@recon")) { net_force_reconnect(); show_toast("reconnecting"); }
     else if (!strcmp(row.verb, "@linkmode")) { link_mode_cycle(); show_toast(link_mode_str()); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@wifiedit")) { open_wifi_edit(nullptr); }
@@ -584,6 +602,15 @@ void menu_ui_set_ack(const char *ack) {
 
 // called from the .ino loop to expire the toast
 void menu_ui_tick() {
+  // Poll an in-flight async WiFi scan; build the results overlay once done
+  // (WIFI_SCAN_RUNNING == -1 while pending; >=0 count, -2 failed when finished).
+  if (s_scan_pending) {
+    int n = WiFi.scanComplete();
+    if (n != WIFI_SCAN_RUNNING) {
+      s_scan_pending = false;
+      build_scan_overlay(n);
+    }
+  }
   if (s_toast && millis() > s_toast_until) {
     lv_obj_del(s_toast); s_toast = nullptr;
   }

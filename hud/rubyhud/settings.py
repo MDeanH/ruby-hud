@@ -149,6 +149,10 @@ class SettingsPage(TouchMenu):
                      on_tap=lambda ctx: self._sat_send("sat_page1")),
             MenuItem("SHOW MENU",
                      on_tap=lambda ctx: self._sat_send("sat_page2")),
+            MenuItem("< PREV PAGE",
+                     on_tap=lambda ctx: self._sat_send("sat_prev")),
+            MenuItem("NEXT PAGE >",
+                     on_tap=lambda ctx: self._sat_send("sat_next")),
             MenuItem("ROTATE 180",
                      on_tap=lambda ctx: self._sat_send("rot_toggle")),
             MenuItem("BACKLIGHT OFF", danger=True,
@@ -200,12 +204,10 @@ class SettingsPage(TouchMenu):
             ts = float((st or {}).get("ts") or 0)
         except Exception:
             ts = 0.0
-        if self._check_wall is not None:
-            age = time.time() - self._check_wall
-            if ts < self._check_wall:
-                if age < 30.0:
-                    return "checking..."
-                return "offline"
+        if (self._check_wall is not None
+                and time.time() - self._check_wall < 30.0
+                and ts < self._check_wall):
+            return "checking..."
         if st is None:
             return "offline"
         ph = _phase(st)
