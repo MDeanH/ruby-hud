@@ -1,0 +1,4 @@
+# Lets the HUD (user michael) toggle the AI-vision service from CONFIGURE > AI VISION
+# without a password. Scoped to ONLY these rubyvision systemctl verbs. Install to
+# /etc/sudoers.d/rubyhud-vision (mode 0440, root:root); validate with visudo -cf first.
+michael ALL=(root) NOPASSWD: /usr/bin/systemctl start rubyvision, /usr/bin/systemctl stop rubyvision, /usr/bin/systemctl restart rubyvision

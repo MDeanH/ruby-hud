@@ -123,17 +123,18 @@ class SettingsPage(TouchMenu):
             MenuItem("WI-FI", submenu=self._wifi_items),
             MenuItem("RECORDING", value_fn=self._recording_value,
                      submenu=self._recording_items),
+            MenuItem("AI VISION", value_fn=self._vision_value,
+                     on_tap=self._toggle_vision),
             MenuItem("CAN BUS",
                      on_tap=lambda ctx: ctx.__setitem__("nav_request", "CAN BUS")),
             # Subsystems with hardware/feasibility prerequisites: surfaced as
             # honest 'planned' entries (dimmed) until each is built out.
+            # (NAVIGATION dropped — CarPlay provides nav off the phone.)
             MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),
             MenuItem("BLUETOOTH", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),
             MenuItem("CARPLAY", value_fn=lambda: "planned",
-                     enabled_fn=lambda: False),
-            MenuItem("NAVIGATION", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),
             MenuItem("VERSION / ABOUT", submenu=self._about_items),
             MenuItem("SATELLITE", submenu=self._satellite_items),
@@ -143,6 +144,35 @@ class SettingsPage(TouchMenu):
     @staticmethod
     def _recording_value():
         return "REC" if recorder.any_active() else "off"
+
+    # -- AI vision service on/off -------------------------------------------- #
+    _vision_status = {"t": 0.0, "v": "--"}
+
+    def _vision_value(self):
+        # Cached so the per-frame value_fn never shells out every frame.
+        from .signals import _run
+        now = time.monotonic()
+        c = self._vision_status
+        if now - c["t"] >= 2.5:
+            out = _run(["systemctl", "is-active", "rubyvision"], timeout=2.0)
+            c["v"] = "ON" if (out or "").strip() == "active" else "off"
+            c["t"] = now
+        return c["v"]
+
+    def _toggle_vision(self, ctx):
+        # Fire-and-forget via sudo (passwordless drop-in installed for these
+        # systemctl verbs) so the render thread never blocks on the unit op.
+        import subprocess
+        from .signals import _run
+        out = _run(["systemctl", "is-active", "rubyvision"], timeout=2.0)
+        action = "stop" if (out or "").strip() == "active" else "start"
+        try:
+            subprocess.Popen(
+                ["sudo", "-n", "/usr/bin/systemctl", action, "rubyvision"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        self._vision_status["t"] = 0.0   # refresh status on the next frame
 
     def _recording_items(self) -> list:
         return [

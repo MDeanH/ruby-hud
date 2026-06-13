@@ -1,0 +1,8 @@
+{
+  "name": "ruby-carplay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CarPlay bridge for Ruby HUD (node-carplay + CarlinKit dongle -> DRM player)",
+  "dependencies": { "node-carplay": "*" }
+}
