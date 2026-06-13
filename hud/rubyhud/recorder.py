@@ -235,3 +235,31 @@ def last_file_name() -> str:
     if not cand:
         return "--"
     return os.path.basename(sorted(cand)[-1])
+
+
+_LIST_TTL = 3.0
+_list_cache = {"t": 0.0, "files": []}
+
+
+def list_recordings() -> list:
+    """Newest-first list of recording file paths in REC_DIR (.mp4). TTL-cached
+    (~3s): menu value_fns call this every frame on the render thread, so the
+    glob+stat must not run per frame."""
+    import glob
+    now = time.monotonic()
+    if now - _list_cache["t"] < _LIST_TTL:
+        return list(_list_cache["files"])
+    try:
+        files = glob.glob(os.path.join(REC_DIR, "*.mp4"))
+        files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    except Exception:
+        files = []
+    _list_cache["t"] = now
+    _list_cache["files"] = files
+    return list(files)
+
+
+def recording_count() -> str:
+    """Short count for the PLAYBACK menu row, e.g. '3 clips'."""
+    n = len(list_recordings())
+    return ("%d clips" % n) if n else "none"

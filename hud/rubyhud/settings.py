@@ -73,10 +73,10 @@ def _uptime_value():
 
 
 class SettingsPage(TouchMenu):
-    name = "SETTINGS"
+    name = "CONFIGURE"
 
     def __init__(self):
-        super().__init__("SETTINGS", self._root_items())
+        super().__init__("CONFIGURE", self._root_items())
         self._check_wall = None   # wall time of our last check request
         self._flow_wall = None    # wall time of our apply/rollback request
         self._result_seen = None  # status ts of a dismissed result banner
@@ -102,33 +102,20 @@ class SettingsPage(TouchMenu):
 
     # -- items ---------------------------------------------------------------- #
     def _root_items(self) -> list:
+        # This page IS the CONFIGURE hub now (its own top-level page); the
+        # update/service controls live under the SYSTEM submenu, and the CAN
+        # BUS / PLAYBACK views are hidden pages reached via deep-link.
         return [
-            MenuItem("CHECK FOR UPDATES", value_fn=self._check_value,
-                     on_tap=self._do_check),
-            MenuItem("UPDATE NOW", value_fn=self._avail_value,
-                     enabled_fn=self._update_ready,
-                     confirm=self._confirm_apply, on_tap=self._do_apply),
-            MenuItem("ROLLBACK", value_fn=self._prev_value,
-                     enabled_fn=lambda: updates.previous_version() is not None,
-                     confirm=self._confirm_rollback, danger=True,
-                     on_tap=self._do_rollback),
-            MenuItem("CONFIGURE", submenu=self._configure_items),
-            MenuItem("VERSION / ABOUT", submenu=self._about_items),
-            MenuItem("SATELLITE", submenu=self._satellite_items),
-            MenuItem("SERVICE", submenu=self._service_items),
-        ]
-
-    # -- configure hub -------------------------------------------------------- #
-    def _configure_items(self) -> list:
-        return [
-            MenuItem("CUSTOMIZE SCREENS", submenu=self._satellite_items),
-            MenuItem("WI-FI", submenu=self._wifi_items),
             MenuItem("TEMPERATURE", value_fn=config.temp_label,
                      on_tap=lambda ctx: config.toggle_temp_unit()),
             MenuItem("SPEED UNITS", value_fn=config.speed_label,
                      on_tap=lambda ctx: config.toggle_speed_unit()),
+            MenuItem("CUSTOMIZE SCREENS", submenu=self._satellite_items),
+            MenuItem("WI-FI", submenu=self._wifi_items),
             MenuItem("RECORDING", value_fn=self._recording_value,
                      submenu=self._recording_items),
+            MenuItem("CAN BUS",
+                     on_tap=lambda ctx: ctx.__setitem__("nav_request", "CAN BUS")),
             # Subsystems with hardware/feasibility prerequisites: surfaced as
             # honest 'planned' entries (dimmed) until each is built out.
             MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
@@ -139,6 +126,24 @@ class SettingsPage(TouchMenu):
                      enabled_fn=lambda: False),
             MenuItem("NAVIGATION", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),
+            MenuItem("SYSTEM", submenu=self._system_items),
+        ]
+
+    # -- system / service submenu (updates, rollback, about, satellite) ------- #
+    def _system_items(self) -> list:
+        return [
+            MenuItem("CHECK FOR UPDATES", value_fn=self._check_value,
+                     on_tap=self._do_check),
+            MenuItem("UPDATE NOW", value_fn=self._avail_value,
+                     enabled_fn=self._update_ready,
+                     confirm=self._confirm_apply, on_tap=self._do_apply),
+            MenuItem("ROLLBACK", value_fn=self._prev_value,
+                     enabled_fn=lambda: updates.previous_version() is not None,
+                     confirm=self._confirm_rollback, danger=True,
+                     on_tap=self._do_rollback),
+            MenuItem("VERSION / ABOUT", submenu=self._about_items),
+            MenuItem("SATELLITE", submenu=self._satellite_items),
+            MenuItem("SERVICE", submenu=self._service_items),
         ]
 
     @staticmethod
@@ -151,6 +156,9 @@ class SettingsPage(TouchMenu):
                      on_tap=lambda ctx: recorder.toggle_screen()),
             MenuItem("RECORD CAMERA", value_fn=recorder.camera_status,
                      on_tap=lambda ctx: recorder.toggle_camera()),
+            MenuItem("PLAYBACK", value_fn=recorder.recording_count,
+                     on_tap=lambda ctx: ctx.__setitem__("nav_request",
+                                                        "PLAYBACK")),
             MenuItem("LAST FILE", value_fn=recorder.last_file_name),
             MenuItem("SAVED TO", value_fn=lambda: "~/recordings"),
         ]
@@ -397,7 +405,7 @@ class SettingsPage(TouchMenu):
 
     def _draw_header(self, draw, tail):
         gauges.tracked_text(draw, (self.MENU_X0 + 28) * SS,
-                            (self.CARD_Y0 + 13) * SS, "SETTINGS > " + tail,
+                            (self.CARD_Y0 + 13) * SS, "CONFIGURE > " + tail,
                             font(20 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
 
     @staticmethod

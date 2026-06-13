@@ -48,8 +48,11 @@ def _log(msg: str) -> None:
 
 def _make_ui(channel: str, page_idx: int = 0) -> dict:
     pages = make_pages()
-    return {"page_idx": page_idx % len(pages), "pages": pages,
-            "ctx": make_ctx(channel), "tap_fx": None}
+    idx = page_idx % len(pages)
+    if getattr(pages[idx], "hidden", False):   # never boot onto a hidden page
+        idx = _first_visible(pages)
+    return {"page_idx": idx, "pages": pages, "ctx": make_ctx(channel),
+            "tap_fx": None, "_shown_idx": None, "nav_return": None}
 
 
 # --- oneshot ---------------------------------------------------------------
@@ -126,52 +129,128 @@ def _apply_remote(ui, state) -> None:
             return
         state["remote_seq"] = seq
         cmd = str(doc.get("cmd", ""))
-        n = len(ui["pages"])
+        pages = ui["pages"]
         if cmd == "page_next":
-            ui["page_idx"] = (ui["page_idx"] + 1) % n
+            ui["page_idx"] = _visible_step(pages, ui["page_idx"], +1)
         elif cmd == "page_prev":
-            ui["page_idx"] = (ui["page_idx"] - 1) % n
+            ui["page_idx"] = _visible_step(pages, ui["page_idx"], -1)
     except Exception:
         pass
 
 
-def _apply_touch(ui, touch, pages, state) -> None:
-    """Drain gestures and mutate ui (page_idx wraps; tap_fx for feedback)."""
+def _visible_step(pages, idx, direction) -> int:
+    """Next VISIBLE page index in `direction` (+1/-1), skipping hidden pages."""
     n = len(pages)
+    j = idx
+    for _ in range(n):
+        j = (j + direction) % n
+        if not getattr(pages[j], "hidden", False):
+            return j
+    return idx
+
+
+def _first_visible(pages) -> int:
+    for i, p in enumerate(pages):
+        if not getattr(p, "hidden", False):
+            return i
+    return 0
+
+
+def _page_index_by_name(pages, name):
+    for i, p in enumerate(pages):
+        if getattr(p, "name", None) == name:
+            return i
+    return None
+
+
+def _exit_hidden(ui, pages) -> int:
+    """Leave a hidden page: return to where we deep-linked from (or first vis)."""
+    ret = ui.get("nav_return")
+    ui["nav_return"] = None
+    if ret is not None and 0 <= ret < len(pages) \
+            and not getattr(pages[ret], "hidden", False):
+        return ret
+    return _first_visible(pages)
+
+
+def _consume_nav_request(ui, pages) -> None:
+    """A menu action may have set ctx['nav_request'] to a page name; switch to
+    that page (often hidden), remembering where to return."""
+    req = ui["ctx"].get("nav_request")
+    if not req:
+        return
+    ui["ctx"]["nav_request"] = None
+    ti = _page_index_by_name(pages, req)
+    if ti is not None and ti != ui["page_idx"]:
+        ui["nav_return"] = ui["page_idx"]
+        ui["page_idx"] = ti
+
+
+def _dispatch_page_change(ui, pages) -> None:
+    """Single source of truth for page-activation hooks: whenever page_idx has
+    moved since last frame, fire on_hide(old) + on_show(new). Catches every
+    switch path (swipe/edge/hold/deep-link/exit-hidden/remote). Lets a page set
+    up / tear down on entry (e.g. PLAYBACK opens/releases its decoder) instead
+    of inferring it from render timing."""
+    shown = ui.get("_shown_idx")
+    cur = ui["page_idx"]
+    if shown == cur:
+        return
+    if shown is not None and 0 <= shown < len(pages):
+        try:
+            pages[shown].on_hide(ui["ctx"])
+        except Exception:
+            _log("on_hide error:\n" + traceback.format_exc())
+    try:
+        pages[cur].on_show(ui["ctx"])
+    except Exception:
+        _log("on_show error:\n" + traceback.format_exc())
+    ui["_shown_idx"] = cur
+
+
+def _apply_touch(ui, touch, pages, state) -> None:
+    """Drain gestures and mutate ui (skips hidden pages in the swipe rotation;
+    deep-links to hidden pages via ctx['nav_request']; tap_fx for feedback)."""
     old_idx = ui["page_idx"]
     for ev in touch.events():
         kind, ex, ey = ev[0], ev[1], ev[2]
+        idx = ui["page_idx"]
+        hidden = getattr(pages[idx], "hidden", False)
         if kind == "swipe_left":
-            ui["page_idx"] = (ui["page_idx"] + 1) % n
+            ui["page_idx"] = (_exit_hidden(ui, pages) if hidden
+                              else _visible_step(pages, idx, +1))
         elif kind == "swipe_right":
-            ui["page_idx"] = (ui["page_idx"] - 1) % n
+            ui["page_idx"] = (_exit_hidden(ui, pages) if hidden
+                              else _visible_step(pages, idx, -1))
         elif kind == "hold":
             consumed = False
             try:
-                consumed = bool(pages[ui["page_idx"]].handle_hold(
-                    ex, ey, ui["ctx"]))
+                consumed = bool(pages[idx].handle_hold(ex, ey, ui["ctx"]))
             except Exception:
                 _log("hold handler error:\n" + traceback.format_exc())
             if not consumed:
-                # Fallback gesture: long-press anywhere cycles pages too.
-                ui["page_idx"] = (ui["page_idx"] + 1) % n
+                ui["page_idx"] = (_exit_hidden(ui, pages) if hidden
+                                  else _visible_step(pages, idx, +1))
         elif kind in ("swipe_up", "swipe_down"):
             try:
-                pages[ui["page_idx"]].handle_swipe_v(
+                pages[idx].handle_swipe_v(
                     "up" if kind == "swipe_up" else "down", ui["ctx"])
             except Exception:
                 _log("swipe handler error:\n" + traceback.format_exc())
         elif kind == "tap":
-            if ex < EDGE_PX:
-                ui["page_idx"] = (ui["page_idx"] - 1) % n
-            elif ex > EDGE_RIGHT_PX:
-                ui["page_idx"] = (ui["page_idx"] + 1) % n
+            # Edge-tap page nav only on visible pages; on hidden pages all taps
+            # go to the page (e.g. CAN pause / PLAYBACK pause).
+            if not hidden and ex < EDGE_PX:
+                ui["page_idx"] = _visible_step(pages, idx, -1)
+            elif not hidden and ex > EDGE_RIGHT_PX:
+                ui["page_idx"] = _visible_step(pages, idx, +1)
             else:
                 try:
-                    pages[ui["page_idx"]].handle_tap(ex, ey, ui["ctx"])
+                    pages[idx].handle_tap(ex, ey, ui["ctx"])
                 except Exception:
                     _log("tap handler error:\n" + traceback.format_exc())
                 ui["tap_fx"] = (ex, ey, time.time())
+                _consume_nav_request(ui, pages)
     if ui["page_idx"] != old_idx:
         now = time.monotonic()
         if now - state.get("last_page_log", 0.0) >= 1.0:
@@ -218,6 +297,7 @@ def _normal() -> int:
             t0 = time.monotonic()
             _apply_touch(ui, touch, pages, state)
             _apply_remote(ui, state)
+            _dispatch_page_change(ui, pages)
             try:
                 snap = dl.snapshot()
                 img = compose_frame(snap, W, H, ui)

@@ -50,6 +50,7 @@ class Page:
     """Base page: render the body; handle_* return True when consumed."""
 
     name = "PAGE"
+    hidden = False   # True => not in the swipe rotation; reached via deep-link
 
     def render_static(self, draw, img):
         """Draw never-changing page chrome into the static layer (once)."""
@@ -68,6 +69,14 @@ class Page:
     def handle_swipe_v(self, direction, ctx):
         """Vertical swipe; direction is 'up' or 'down'."""
         return False
+
+    def on_show(self, ctx):
+        """Called once when this page becomes active (page_idx switches to it)."""
+        pass
+
+    def on_hide(self, ctx):
+        """Called once when this page stops being active (switch away)."""
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -353,10 +362,11 @@ class VehiclePage(Page):
 
 
 # --------------------------------------------------------------------------- #
-# Page 3: raw CAN traffic
+# Page: raw CAN traffic (hidden — reached via CONFIGURE > CAN BUS)
 # --------------------------------------------------------------------------- #
 class CanPage(Page):
     name = "CAN BUS"
+    hidden = True
 
     # Frame-list hit box / panel (screen px, pre-supersample). Left ~60%.
     LIST_X0, LIST_X1 = 32, 760
@@ -1308,24 +1318,29 @@ class AIVisionPage(Page):
 # --------------------------------------------------------------------------- #
 def make_pages() -> list:
     from .settings import SettingsPage  # function-level: no import cycle
-    pages = [GaugesPage(), VehiclePage(), CanPage(), SystemPage(),
-             SettingsPage()]
-    # Vision page is appended after Settings if present, else at the end.
-    # (Construction is import-guarded so a malformed page never breaks the
-    # rotation; the page itself degrades to OFFLINE when the service is down.)
+    # Visible swipe rotation: GAUGES, VEHICLE, SYSTEM, CONFIGURE[, AI VISION].
+    pages = [GaugesPage(), VehiclePage(), SystemPage(), SettingsPage()]
+    # Vision page appended to the visible rotation if it constructs.
     try:
         vision = AIVisionPage()
     except Exception:
         vision = None
     if vision is not None:
-        insert_at = len(pages)
-        for i, p in enumerate(pages):
-            if getattr(p, "name", "") == "SETTINGS":
-                insert_at = i + 1
-        pages.insert(insert_at, vision)
+        pages.append(vision)
+    # Hidden pages: not in the swipe rotation, reached via CONFIGURE deep-links
+    # (ctx['nav_request']). CanPage + PlaybackPage are diagnostic / on-demand.
+    pages.append(CanPage())
+    try:
+        from .playback import PlaybackPage
+        pages.append(PlaybackPage())
+    except Exception:
+        pass
     return pages
 
 
 def make_ctx(channel: str) -> dict:
     return {"theme": theme, "gauges": gauges, "channel": channel,
-            "frozen": False, "cpu_hist": deque(maxlen=60), "vision": None}
+            "frozen": False, "cpu_hist": deque(maxlen=60), "vision": None,
+            # deep-link request: a menu action sets this to a page name; the
+            # main loop consumes it to switch to that (often hidden) page.
+            "nav_request": None}

@@ -134,11 +134,29 @@ def _chrome_static(w: int, h: int) -> Image.Image:
 
 
 def _draw_nav_static(draw, img, pages, idx):
-    """Page dots + name (static per page) and subtle edge chevrons."""
-    n = len(pages)
+    """Page dots + name (static per page) and subtle edge chevrons. Dots track
+    only the VISIBLE swipe rotation; a hidden page (CAN / PLAYBACK, reached via
+    a CONFIGURE deep-link) shows a back hint instead of dots/chevrons."""
+    sw = img.width
+    cur = pages[idx] if 0 <= idx < len(pages) else None
+    if cur is None:
+        return
+
+    if getattr(cur, "hidden", False):
+        gauges.tracked_text_center(draw, sw // 2, 770 * SS,
+                                   "<  HOLD OR SWIPE TO GO BACK",
+                                   font(16 * SS, "bold"), TEXT_DIM,
+                                   tracking=3 * SS)
+        return
+
+    visible = [p for p in pages if not getattr(p, "hidden", False)]
+    n = len(visible)
     if n == 0:
         return
-    sw = img.width
+    try:
+        vidx = visible.index(cur)
+    except ValueError:
+        vidx = 0
     r = 8 * SS
     gap = 34 * SS
     cy = 757 * SS
@@ -146,16 +164,15 @@ def _draw_nav_static(draw, img, pages, idx):
     for i in range(n):
         cx = cx0 + i * gap
         box = [cx - r, cy - r, cx + r, cy + r]
-        if i == idx:
+        if i == vidx:
             g = gauges.glow_dot(int(r * 1.7), ACCENT_GLOW, strength=0.8)
             img.paste(g, (cx - g.width // 2, cy - g.height // 2), g)
             draw.ellipse(box, fill=ACCENT)
         else:
             draw.ellipse(box, fill=mix(BG, TEXT_DIM, 0.35))
-    name = str(getattr(pages[idx], "name", ""))
-    gauges.tracked_text_center(draw, sw // 2, 783 * SS, name,
-                               font(16 * SS, "bold"), TEXT_DIM,
-                               tracking=4 * SS)
+    gauges.tracked_text_center(draw, sw // 2, 783 * SS,
+                               str(getattr(cur, "name", "")),
+                               font(16 * SS, "bold"), TEXT_DIM, tracking=4 * SS)
 
     # Invisible edge tap zones, hinted only by small mid-height chevrons.
     ch = font(40 * SS, "bold")
