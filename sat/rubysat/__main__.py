@@ -132,10 +132,9 @@ def _queue_update_request(cmd: str, ref=None) -> bool:
 
     Prefers rubyhud.updates.request() (the canonical writer; import guarded at
     use-site). When rubyhud is not importable (build host, broken install) it
-    falls back to a self-contained atomic write of {"cmd":...[,"ref":...],
-    "ts":...} into <update-dir>/queue: mkstemp in-dir with a DOT-PREFIXED temp
-    name (the path unit's *.req glob must never fire on a half-written file)
-    then os.replace() into the final *.req name."""
+    falls back to a self-contained atomic write of {"cmd":...[,"ref":...]}
+    into <update-dir>/queue: mkstemp in-dir with a DOT-PREFIXED temp name, then
+    os.replace() into the final *.req name (the path unit watches the queue dir)."""
     try:
         try:
             from rubyhud import updates
