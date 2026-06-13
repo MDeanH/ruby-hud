@@ -7,6 +7,7 @@
 // the root updater. DISPLAY/CONNECTION/ABOUT do local actions or show info.
 
 #include "menu_ui.h"
+#include "netlink.h"
 #include <Arduino.h>
 #include <string.h>
 #include <stdio.h>
@@ -24,7 +25,7 @@ extern bool display_is_rotated();
 extern void display_set_mirror(bool on);        // windshield HUD flip (NVS)
 extern bool display_is_mirrored();
 
-#define FW_VERSION "3.3.0-sat"
+#define FW_VERSION "3.4.2-sat"
 
 // --- palette (mirror ui.cpp) ----------------------------------------------- //
 #define M_BG      lv_color_hex(0x07090c)
@@ -79,6 +80,13 @@ static const char *vf_uptime() { unsigned s=millis()/1000; snprintf(s_buf[4],48,
 static const char *vf_ack()    { return s_lastack; }
 static const char *vf_rot()    { return display_is_rotated() ? "ON" : "off"; }
 static const char *vf_mir()    { return display_is_mirrored() ? "ON" : "off"; }
+static const char *vf_trans()  { return netlink_transport_label(); }
+static const char *vf_netpref(){ return netlink_netpref_label(); }
+static const char *vf_link()   {
+  if (netlink_usb_active()) return "USB";
+  if (netlink_wifi_up()) return "WIFI";
+  return "down";
+}
 
 // ------------------------------------------------------------------ menus    //
 // indices: 0 root, 1 RUBY, 2 DISPLAY, 3 CONNECTION, 4 ABOUT
@@ -104,14 +112,18 @@ static Menu g_menus[5] = {
       { ROW_ACTION, "Backlight test","@blt",  false, false, 0, nullptr },
   }, 4 },
   { "CONNECTION", {
-      { ROW_BACK,   "< back",     nullptr,    false, false, 0, nullptr },
-      { ROW_INFO,   "SSID",       nullptr,    false, false, 0, vf_ssid },
-      { ROW_INFO,   "My IP",      nullptr,    false, false, 0, vf_myip },
-      { ROW_INFO,   "Ruby IP",    nullptr,    false, false, 0, vf_rubyip },
-      { ROW_INFO,   "RSSI",       nullptr,    false, false, 0, vf_rssi },
-      { ROW_INFO,   "RX rate",    nullptr,    false, false, 0, vf_rxrate },
-      { ROW_ACTION, "Reconnect",  "@recon",   false, false, 0, nullptr },
-  }, 7 },
+      { ROW_BACK,   "< back",          nullptr,    false, false, 0, nullptr },
+      { ROW_ACTION, "Transport",       "@tmode",   false, false, 0, vf_trans },
+      { ROW_ACTION, "WiFi network",    "@nmode",   false, false, 0, vf_netpref },
+      { ROW_INFO,   "Link",            nullptr,    false, false, 0, vf_link },
+      { ROW_INFO,   "SSID",            nullptr,    false, false, 0, vf_ssid },
+      { ROW_INFO,   "My IP",           nullptr,    false, false, 0, vf_myip },
+      { ROW_INFO,   "Ruby IP",         nullptr,    false, false, 0, vf_rubyip },
+      { ROW_INFO,   "RSSI",            nullptr,    false, false, 0, vf_rssi },
+      { ROW_INFO,   "RX rate",         nullptr,    false, false, 0, vf_rxrate },
+      { ROW_ACTION, "Sync WiFi from Pi","@wsync",  false, false, 0, nullptr },
+      { ROW_ACTION, "Reconnect",       "@recon",   false, false, 0, nullptr },
+  }, 10 },
   { "ABOUT", {
       { ROW_BACK, "< back",   nullptr, false, false, 0, nullptr },
       { ROW_INFO, "Firmware", nullptr, false, false, 0, vf_fw },
@@ -223,6 +235,9 @@ static void do_action(int menu_idx, int row_idx) {
     else if (!strcmp(row.verb, "@rot"))   { display_set_rotated(!display_is_rotated()); show_toast("rotated"); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@blt")) { panel_backlight(false); lv_timer_handler(); delay(250); panel_backlight(true); show_toast("backlight"); }
     else if (!strcmp(row.verb, "@recon")) { net_force_reconnect(); show_toast("reconnecting"); }
+    else if (!strcmp(row.verb, "@tmode")) { netlink_cycle_transport(); show_toast(netlink_transport_label()); build_list(menu_idx); }
+    else if (!strcmp(row.verb, "@nmode")) { netlink_cycle_netpref(); show_toast(netlink_netpref_label()); build_list(menu_idx); }
+    else if (!strcmp(row.verb, "@wsync")) { netlink_request_wifi_sync(); show_toast("wifi sync"); }
     return;
   }
   if (row.confirm) { open_modal(menu_idx, row_idx); return; }

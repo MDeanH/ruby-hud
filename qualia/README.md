@@ -1,12 +1,14 @@
 # Qualia rubysat satellite display
 
-A second screen for Ruby. The **Adafruit Qualia ESP32-S3** (4" 720×720 RGB-666,
+A second screen for Ruby. The **Adafruit Qualia ESP32-S3** (4" 480×480 RGB-666,
 panel TL040HDS20) renders the gauges **locally in LVGL** and receives live
-vehicle state from the Ruby Pi over Wi-Fi. The Pi runs `rubysat` (a small TCP
-server, port 7878) that maps the existing rubyhud `Snapshot` + vision status +
-SoC temp into a newline-delimited JSON stream. The Qualia's cap-touch sends
-commands back. Fully decoupled, network-only — no wires between the Pi and the
-display.
+vehicle state from the Ruby Pi over **USB** (plug the Qualia into the Pi with
+USB-C — no Wi-Fi needed) or **Wi-Fi** (TCP port 7878). The Pi runs `rubysat`,
+which maps the existing rubyhud `Snapshot` + vision status + SoC temp into a
+newline-delimited JSON stream. The Qualia's cap-touch sends commands back.
+Transport and Wi-Fi network are selectable on the 4" **MENU → CONNECTION**
+screen (AUTO tries USB first, then Wi-Fi; **Sync WiFi from Pi** copies the Pi's
+active network credentials over USB).
 
 Firmware lives in [`rubysat-display/`](rubysat-display/).
 
@@ -31,14 +33,44 @@ from **Adafruit's standard Arduino_GFX Qualia S3 example** and live in
 
 ## Protocol (must match the Pi `rubysat` server)
 
-- **Transport:** TCP. Ruby = server `0.0.0.0:7878`. Qualia = client (auto-reconnect, exponential backoff to 8s).
+### Transports
+
+| Mode | How | When to use |
+|------|-----|-------------|
+| **AUTO** (default) | USB CDC if STATE arrives within ~2.5 s of boot, else Wi-Fi TCP | Most installs — cable in the car, Wi-Fi on the bench |
+| **USB** | Qualia USB-C → Pi; `/dev/ttyACM*` NDJSON @ 115200 | In-car: no Wi-Fi setup, lowest latency |
+| **WIFI** | TCP client → Pi `0.0.0.0:7878` (mDNS `ruby.local`, fallback IP) | Display away from the Pi on the same LAN |
+
+Both transports carry the **same** newline-delimited JSON. The Pi `rubysat`
+service broadcasts every STATE line to **all** connected TCP clients **and**
+the USB serial link simultaneously.
+
+### Wi-Fi network selection (4" MENU → CONNECTION)
+
+| Setting | Source |
+|---------|--------|
+| **HOME** | `secrets.h` `WIFI_SSID` / `WIFI_PASS` |
+| **HOTSPOT** | `secrets.h` `WIFI_SSID2` / `WIFI_PASS2` |
+| **FROM PI** | Credentials received via **Sync WiFi from Pi** (USB only) |
+
+**Sync WiFi from Pi:** the Qualia sends `{"cmd":"wifi_sync",...}` over USB;
+the Pi replies with `{"type":"wifi","ssid":"...","pass":"..."}` (read from
+NetworkManager via `nmcli`). The Qualia stores these in NVS and switches to
+**FROM PI** network mode.
+
+Optional STATE field (informational): `"pi_ssid":"..."` — the SSID the Pi is
+currently using (no password on the wire).
+
+### Wire format
+
 - **Encoding:** newline-delimited JSON, UTF-8, ASCII only.
 - **Ruby → Qualia** STATE line @ ~15 Hz (heartbeat ≥2 Hz if data stalls):
   ```json
   {"t":<float>,"seq":<int>,"rpm":<int|null>,"mph":<int|null>,"gear":"<str>",
    "coolant":<int|null>,"volts":<float|null>,"throttle":<int|null>,
    "fuel":<int|null>,"bus":"<UP|NO BUS|ERROR>","canfps":<int>,
-   "vsrc":"<csi|usb|video|pattern|off>","vdets":<int>,"soc":<float|null>}
+   "vsrc":"<csi|usb|video|pattern|off>","vdets":<int>,"soc":<float|null>,
+   "pi_ssid":"<str|null>"}
   ```
   An optional `"ack"` key may additionally appear for ~3 s after a control
   verb is handled (see below). Clients must tolerate it being absent and
@@ -164,6 +196,46 @@ If upload fails to start, put the board in bootloader mode (hold **BOOT**, tap
 **RESET**, release **BOOT**) and retry. The Qualia exposes a native USB CDC
 port — the `cu.usbmodem*` name may change after a reset.
 
+## Rollback / recovery
+
+If a Pi OTA or firmware flash misbehaves, you can always return to a known-good
+state. Nothing in this USB/Wi-Fi work removes or replaces the existing rollback
+machinery.
+
+### Pi (rubyhud + rubysat)
+
+| Method | What it restores |
+|--------|------------------|
+| **7" HUD → SETTINGS → Rollback** | Previous release tag (`hud-state/previous`); symlink flip + rubysat re-pin |
+| **`ruby-update.sh rollback`** | Same as above from SSH |
+| **Auto-rollback** | If rubyhud crash-loops 4× in 120 s, `ruby-rollback.service` reverts a pending failed update |
+
+Rollback re-runs `setup-sat.sh` from the target release so **rubysat** imports
+match the rolled-back HUD code (not just the symlink). TCP `:7878` keeps working
+on every tag — old Qualia firmware never required USB.
+
+**USB-only emergency:** if the new serial link causes trouble, disable it without
+rolling back the whole release:
+
+```bash
+sudo systemctl edit rubysat
+# Under [Service], change ExecStart to append --no-serial
+sudo systemctl restart rubysat
+```
+
+### Qualia firmware
+
+Firmware is flashed from git, not OTA'd by `ruby-updated`. To undo a bad flash:
+
+1. Check out the previous tag: `git checkout v3.4.1` (or whatever worked).
+2. Re-run the `arduino-cli compile` / `upload` commands from this README.
+3. On the 4" screen: **MENU → CONNECTION → Transport → WIFI** (or AUTO) if USB
+   mode was selected and you unplugged the cable.
+
+NVS prefs (transport, synced Wi-Fi) survive reflashes within the same partition
+scheme; cycling **Transport** / **WiFi network** in CONNECTION clears bad choices
+without a reflash.
+
 ## Build & flash — PlatformIO (alternative)
 
 ```sh
@@ -180,7 +252,8 @@ See `platformio.ini` for the note on `lv_conf.h` placement under PlatformIO
 
 | File | Purpose |
 |------|---------|
-| `rubysat-display/rubysat-display.ino` | setup/loop, Wi-Fi, mDNS, TCP client, JSON parse, LVGL plumbing |
+| `rubysat-display/rubysat-display.ino` | setup/loop, LVGL plumbing, STATE handler |
+| `rubysat-display/netlink.h` / `netlink.cpp` | USB + Wi-Fi transport (AUTO/USB/WIFI) |
 | `rubysat-display/panel.h` / `panel.cpp` | Qualia RGB panel + I/O-expander bring-up (Adafruit pin map) |
 | `rubysat-display/ui.h` / `ui.cpp` | LVGL gauge layout + setters |
 | `rubysat-display/touch.h` | best-effort cap-touch driver @ I2C `0x48` |

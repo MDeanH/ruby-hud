@@ -220,6 +220,10 @@ self_install() {  # <release-dir>: refresh handler + unit files from release
         # Enable on first install / whenever the unit changes (idempotent).
         systemctl enable rubyvision >/dev/null 2>&1
     fi
+    if sync_file "$d/rubysat.service" /etc/systemd/system/rubysat.service 0644; then
+        changed=1
+        systemctl enable rubysat >/dev/null 2>&1
+    fi
     mkdir -p /etc/systemd/system/rubyhud.service.d
     sync_file "$d/rubyhud-health.conf" \
         /etc/systemd/system/rubyhud.service.d/10-health.conf 0644 && changed=1
@@ -398,6 +402,16 @@ do_rollback() {
         remove_release "$rel"
         fail "could not stage a verified clean worktree for $ref"; return 1
     fi
+    # Re-pin rubysat/rubyhud into the venv from the rollback target (apply runs
+    # full setup.sh pre-flip; rollback must do the same or the live HUD symlink
+    # and the rubysat import path can disagree after a sat/ change).
+    if [ -f "$rel/deploy/setup-sat.sh" ]; then
+        set_status deps "re-pinning rubysat for rollback to $ref" true
+        if ! bash "$rel/deploy/setup-sat.sh" >>"$SETUP_LOG" 2>&1; then
+            fail "setup-sat.sh failed during rollback to $ref (see $SETUP_LOG)"
+            return 1
+        fi
+    fi
     prev_cur=$CURRENT
     set_status switching "rolling back to $ref" true
     flip_symlink "$ref" || { fail "symlink flip failed"; return 1; }
@@ -409,6 +423,10 @@ do_rollback() {
     if ! watch_hud; then
         fail "rubyhud unhealthy after rollback to $ref"
         return 1
+    fi
+    if verify_release "$ref" "$rel" tracked; then
+        set_status finalizing "self-install + unit sync (rollback)" true
+        self_install "$rel"
     fi
     CURRENT=$ref
     set_status done "rolled back to $ref" true

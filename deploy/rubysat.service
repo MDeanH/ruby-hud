@@ -24,6 +24,11 @@ Group=michael
 # stats fine. rubyhud is imported the same way (editable/.pth), so no PYTHONPATH
 # is needed for live vehicle data either.
 Environment=PYTHONUNBUFFERED=1
+# USB serial: auto-discovers Espressif/Adafruit CDC (/dev/serial/by-id) or a
+# lone /dev/ttyACM*. Override: RUBYSAT_SERIAL_DEV=/dev/ttyACM0. User michael
+# must be in the dialout group for serial access.
+# Emergency (USB misbehaving): systemctl edit rubysat and append --no-serial
+# to ExecStart — TCP-only mode, same as pre-3.4.2 rubysat.
 ExecStart=/home/michael/ruby-env/bin/python -m rubysat --channel can0 --port 7878 --hz 15
 Restart=always
 RestartSec=2

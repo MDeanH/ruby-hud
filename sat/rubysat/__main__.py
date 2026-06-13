@@ -1,6 +1,6 @@
 """rubysat entrypoint: python -m rubysat [options].
 
-Serves the STATE channel to Qualia satellite client(s) over TCP.
+Serves the STATE channel to Qualia satellite client(s) over TCP and/or USB.
 
 Options:
   --channel can0     socketcan channel for the DataLayer. Default can0.
@@ -8,16 +8,16 @@ Options:
   --hz 15            target STATE publish rate. Default 15.
   --novehicle        skip the DataLayer entirely and serve demo snapshots
                      (bench / build-host use, no can0 needed).
+  --no-serial        disable the USB-CDC serial link (TCP only).
 
 Loop each tick:
   1. snapshot vehicle state (DataLayer.snapshot() or demo_snapshot()),
   2. read cached vision status (never raises),
   3. read SoC temperature,
-  4. build_state() -> JSON line, broadcast() to all clients,
-  5. drain inbound CMD lines: allowlisted ruby_* control verbs are mapped to
-     ruby-updated queue commands (via rubyhud.updates.request, with a
-     self-contained atomic-write fallback when rubyhud is not importable);
-     everything else (page_prev / page_next / tap, junk) stays log-only.
+  4. build_state() -> JSON line, broadcast() to TCP + USB clients,
+  5. drain inbound CMD lines from both transports: allowlisted ruby_* control
+     verbs map to ruby-updated queue commands; wifi_sync (USB) returns Pi Wi-Fi
+     credentials; page_prev/page_next forward to rubyhud.
 
 After a verb is handled, a transient "ack" key ("<verb>:sent|failed") rides
 along in STATE lines for ~ACK_TTL_S seconds, then is dropped again. Old
@@ -41,7 +41,9 @@ import sys
 import time
 
 from .publisher import TcpStateServer
+from .seriallink import SerialStateLink
 from .state import build_state
+from . import wifi as pi_wifi
 
 _LOG = "/tmp/rubysat.log"
 # Vision status drop written by rubyvision.
@@ -222,13 +224,13 @@ def _poll_ctl() -> None:
         pass
 
 
-def _handle_command(cmd, ack: dict) -> None:
+def _handle_command(cmd, ack: dict, serial=None) -> None:
     """Route one inbound Qualia CMD dict. NEVER raises; logging is bounded.
 
     Allowlisted ruby_* verbs queue an updater request and arm a transient ack
     ("<verb>:sent|failed") that the publish loop attaches to STATE lines for
-    ACK_TTL_S seconds. Everything else (page_prev / page_next / tap, unknown
-    junk) keeps the v1 log-only behavior."""
+    ACK_TTL_S seconds. wifi_sync replies on the USB link only. Everything else
+    (page_prev / page_next / tap, unknown junk) keeps the v1 log-only behavior."""
     try:
         try:
             line = json.dumps(cmd, separators=(",", ":"))
@@ -237,6 +239,16 @@ def _handle_command(cmd, ack: dict) -> None:
         _log("CMD %s" % line[:_LOG_CMD_MAX])
 
         verb = cmd.get("cmd") if isinstance(cmd, dict) else None
+        if verb == "wifi_sync":
+            ssid, pwd = pi_wifi.active_wifi()
+            ok = False
+            if ssid and serial is not None and serial.connected:
+                payload = {"type": "wifi", "ssid": ssid, "pass": pwd or ""}
+                ok = serial.send_line(json.dumps(payload, separators=(",", ":")))
+            ack["text"] = "wifi_sync:%s" % ("sent" if ok else "failed")
+            ack["until"] = time.monotonic() + ACK_TTL_S
+            _log("wifi_sync -> %s" % ("sent" if ok else "failed"))
+            return
         if verb in ("page_next", "page_prev"):
             _forward_hud_page(verb)
             return
@@ -315,6 +327,8 @@ def main(argv=None) -> int:
     ap.add_argument("--hz", type=float, default=15.0, help="STATE publish rate")
     ap.add_argument("--novehicle", action="store_true",
                     help="skip DataLayer; serve demo snapshots (bench)")
+    ap.add_argument("--no-serial", action="store_true",
+                    help="disable USB-CDC serial link (TCP only)")
     args = ap.parse_args(argv)
 
     hz = args.hz if args.hz > 0 else 15.0
@@ -330,6 +344,10 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 1
     _log("rubysat listening on 0.0.0.0:%d at %.1f Hz" % (args.port, hz))
+
+    serial = None if args.no_serial else SerialStateLink()
+    if serial is not None:
+        _log("rubysat USB serial link enabled")
 
     snapshot_fn, stop_fn = _make_snapshot_source(args.channel, args.novehicle)
     vision = _VisionCache()
@@ -350,6 +368,8 @@ def main(argv=None) -> int:
     try:
         while not stop["flag"]:
             now = time.monotonic()
+            if serial is not None:
+                serial.pump()
             # Emit on the publish period, or sooner only via the period gate;
             # the heartbeat floor matters when period > heartbeat (low --hz).
             due = (now - last_emit) >= min(period, heartbeat)
@@ -370,6 +390,9 @@ def main(argv=None) -> int:
             t = time.time()
             try:
                 state = build_state(snap, vstatus, soc, seq, t)
+                pi_ssid = pi_wifi.active_ssid()
+                if pi_ssid:
+                    state["pi_ssid"] = pi_ssid
                 if ack["text"] is not None:
                     if now < ack["until"]:
                         state["ack"] = ack["text"]
@@ -388,19 +411,27 @@ def main(argv=None) -> int:
                 continue
 
             server.broadcast(line)
+            if serial is not None:
+                serial.broadcast(line)
             seq += 1
             last_emit = now
 
-            # Drain inbound CMD lines: ruby_* verbs map to updater requests
-            # (+ ack); page_prev/page_next/tap and unknowns stay log-only.
             for cmd in server.commands():
-                _handle_command(cmd, ack)
+                _handle_command(cmd, ack, serial)
+            if serial is not None:
+                for cmd in serial.commands():
+                    _handle_command(cmd, ack, serial)
     finally:
         _log("rubysat shutting down")
         try:
             server.stop()
         except Exception:
             pass
+        if serial is not None:
+            try:
+                serial.stop()
+            except Exception:
+                pass
         try:
             stop_fn()
         except Exception:
