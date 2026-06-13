@@ -8,6 +8,7 @@
 
 #include "menu_ui.h"
 #include <Arduino.h>
+#include <WiFi.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -23,8 +24,12 @@ extern void display_set_rotated(bool rot180);   // persists in NVS
 extern bool display_is_rotated();
 extern void display_set_mirror(bool on);        // windshield HUD flip (NVS)
 extern bool display_is_mirrored();
+// Wi-Fi config (NVS-backed; defined in the .ino)
+extern void        wifi_save_creds(const char *ssid, const char *pass);
+extern const char *wifi_cfg_ssid();
+extern const char *wifi_status_str();
 
-#define FW_VERSION "3.3.0-sat"
+#define FW_VERSION "3.5.0-sat"
 
 // --- palette (mirror ui.cpp) ----------------------------------------------- //
 #define M_BG      lv_color_hex(0x07090c)
@@ -79,16 +84,19 @@ static const char *vf_uptime() { unsigned s=millis()/1000; snprintf(s_buf[4],48,
 static const char *vf_ack()    { return s_lastack; }
 static const char *vf_rot()    { return display_is_rotated() ? "ON" : "off"; }
 static const char *vf_mir()    { return display_is_mirrored() ? "ON" : "off"; }
+static const char *vf_wssid()  { const char *s = wifi_cfg_ssid(); return (s && s[0]) ? s : "--"; }
+static const char *vf_wstat()  { return wifi_status_str(); }
 
 // ------------------------------------------------------------------ menus    //
-// indices: 0 root, 1 RUBY, 2 DISPLAY, 3 CONNECTION, 4 ABOUT
-static Menu g_menus[5] = {
+// indices: 0 root, 1 RUBY, 2 DISPLAY, 3 CONNECTION, 4 ABOUT, 5 WI-FI
+static Menu g_menus[6] = {
   { "MENU", {
       { ROW_SUBMENU, "RUBY",       nullptr, false, false, 1, nullptr },
+      { ROW_SUBMENU, "WI-FI",      nullptr, false, false, 5, nullptr },
       { ROW_SUBMENU, "DISPLAY",    nullptr, false, false, 2, nullptr },
       { ROW_SUBMENU, "CONNECTION", nullptr, false, false, 3, nullptr },
       { ROW_SUBMENU, "ABOUT",      nullptr, false, false, 4, nullptr },
-  }, 4 },
+  }, 5 },
   { "RUBY", {
       { ROW_BACK,   "< back",       nullptr,            false, false, 0, nullptr },
       { ROW_ACTION, "Check updates","ruby_check",       false, false, 0, nullptr },
@@ -121,6 +129,14 @@ static Menu g_menus[5] = {
       { ROW_INFO, "Uptime",   nullptr, false, false, 0, vf_uptime },
       { ROW_INFO, "Last verb",nullptr, false, false, 0, vf_ack },
   }, 7 },
+  { "WI-FI", {
+      { ROW_BACK,   "< back",     nullptr,     false, false, 0, nullptr },
+      { ROW_INFO,   "Network",    nullptr,     false, false, 0, vf_wssid },
+      { ROW_INFO,   "Status",     nullptr,     false, false, 0, vf_wstat },
+      { ROW_ACTION, "Edit Wi-Fi", "@wifiedit", false, false, 0, nullptr },
+      { ROW_ACTION, "Scan",       "@wifiscan", false, false, 0, nullptr },
+      { ROW_ACTION, "Reconnect",  "@recon",    false, false, 0, nullptr },
+  }, 6 },
 };
 
 // --------------------------------------------------------------- menu state  //
@@ -215,6 +231,177 @@ static void open_modal(int menu_idx, int row_idx) {
   lv_obj_center(okl);
 }
 
+// ---- Wi-Fi edit screen (textareas + on-screen keyboard) ------------------- //
+// A full-screen overlay on the top layer with SSID + password fields and an
+// LVGL keyboard. Save persists to NVS (wifi_save_creds) and reconnects; Cancel
+// discards. Scan lists visible APs and pre-fills the SSID on tap.
+static lv_obj_t *s_wifi_scr  = nullptr;   // edit OR scan overlay (one at a time)
+static lv_obj_t *s_ta_ssid   = nullptr;
+static lv_obj_t *s_ta_pass   = nullptr;
+static lv_obj_t *s_kb        = nullptr;
+static char      s_scan[16][40];          // SSIDs captured by the last scan
+
+static void open_wifi_edit(const char *prefill_ssid);
+static void open_wifi_scan();
+
+static void wifi_overlay_close() {
+  if (s_wifi_scr) { lv_obj_del(s_wifi_scr); s_wifi_scr = nullptr; }
+  s_ta_ssid = s_ta_pass = s_kb = nullptr;
+}
+
+static void wifi_cancel_cb(lv_event_t *e) { (void)e; wifi_overlay_close(); }
+
+static void wifi_save_cb(lv_event_t *e) {
+  (void)e;
+  const char *ssid = s_ta_ssid ? lv_textarea_get_text(s_ta_ssid) : "";
+  const char *pass = s_ta_pass ? lv_textarea_get_text(s_ta_pass) : "";
+  if (!ssid || !ssid[0]) { show_toast("SSID required"); return; }
+  wifi_save_creds(ssid, pass);
+  wifi_overlay_close();
+  show_toast("Wi-Fi saved");
+  build_list(5);   // refresh the WI-FI page (Network/Status rows)
+}
+
+static void ta_focus_cb(lv_event_t *e) {
+  lv_obj_t *ta = lv_event_get_target(e);
+  if (s_kb) lv_keyboard_set_textarea(s_kb, ta);
+}
+
+static void pass_eye_cb(lv_event_t *e) {
+  (void)e;
+  if (s_ta_pass)
+    lv_textarea_set_password_mode(s_ta_pass,
+                                  !lv_textarea_get_password_mode(s_ta_pass));
+}
+
+static void wifi_scan_pick_cb(lv_event_t *e) {
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  if (idx < 0 || idx >= 16) return;
+  char picked[40];
+  strncpy(picked, s_scan[idx], sizeof(picked) - 1);
+  picked[sizeof(picked) - 1] = '\0';
+  open_wifi_edit(picked);   // closes the scan overlay, opens edit pre-filled
+}
+
+static void open_wifi_edit(const char *prefill_ssid) {
+  wifi_overlay_close();
+  s_wifi_scr = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(s_wifi_scr);
+  lv_obj_set_size(s_wifi_scr, 480, 480);
+  lv_obj_set_style_bg_color(s_wifi_scr, M_BG, 0);
+  lv_obj_set_style_bg_opa(s_wifi_scr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(s_wifi_scr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_wifi_scr, LV_OBJ_FLAG_CLICKABLE);  // absorb stray bg taps
+
+  lv_obj_t *title = lv_label_create(s_wifi_scr);
+  lv_label_set_text(title, "EDIT WI-FI");
+  lv_obj_set_style_text_color(title, M_DIM, 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 12, 6);
+
+  s_ta_ssid = lv_textarea_create(s_wifi_scr);
+  lv_textarea_set_one_line(s_ta_ssid, true);
+  lv_textarea_set_placeholder_text(s_ta_ssid, "SSID");
+  lv_obj_set_size(s_ta_ssid, 456, 42);
+  lv_obj_align(s_ta_ssid, LV_ALIGN_TOP_LEFT, 12, 32);
+  lv_obj_add_event_cb(s_ta_ssid, ta_focus_cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(s_ta_ssid, ta_focus_cb, LV_EVENT_FOCUSED, nullptr);
+  lv_textarea_set_text(s_ta_ssid,
+                       (prefill_ssid && prefill_ssid[0]) ? prefill_ssid
+                                                         : wifi_cfg_ssid());
+
+  s_ta_pass = lv_textarea_create(s_wifi_scr);
+  lv_textarea_set_one_line(s_ta_pass, true);
+  lv_textarea_set_password_mode(s_ta_pass, true);
+  lv_textarea_set_placeholder_text(s_ta_pass, "password");
+  lv_obj_set_size(s_ta_pass, 360, 42);
+  lv_obj_align(s_ta_pass, LV_ALIGN_TOP_LEFT, 12, 80);
+  lv_obj_add_event_cb(s_ta_pass, ta_focus_cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(s_ta_pass, ta_focus_cb, LV_EVENT_FOCUSED, nullptr);
+
+  lv_obj_t *eye = lv_btn_create(s_wifi_scr);
+  lv_obj_set_size(eye, 84, 42);
+  lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -12, 80);
+  lv_obj_set_style_bg_color(eye, M_BORDER, 0);
+  lv_obj_add_event_cb(eye, pass_eye_cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *eyel = lv_label_create(eye); lv_label_set_text(eyel, "show");
+  lv_obj_center(eyel);
+
+  lv_obj_t *save = lv_btn_create(s_wifi_scr);
+  lv_obj_set_size(save, 222, 48);
+  lv_obj_align(save, LV_ALIGN_TOP_LEFT, 12, 130);
+  lv_obj_set_style_bg_color(save, M_ACCENT, 0);
+  lv_obj_add_event_cb(save, wifi_save_cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *sl = lv_label_create(save); lv_label_set_text(sl, "SAVE");
+  lv_obj_center(sl);
+
+  lv_obj_t *cancel = lv_btn_create(s_wifi_scr);
+  lv_obj_set_size(cancel, 222, 48);
+  lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -12, 130);
+  lv_obj_set_style_bg_color(cancel, M_BORDER, 0);
+  lv_obj_add_event_cb(cancel, wifi_cancel_cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *cl = lv_label_create(cancel); lv_label_set_text(cl, "CANCEL");
+  lv_obj_center(cl);
+
+  s_kb = lv_keyboard_create(s_wifi_scr);
+  lv_obj_set_size(s_kb, 480, 282);
+  lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(s_kb, s_ta_ssid);
+  lv_obj_add_event_cb(s_kb, wifi_save_cb, LV_EVENT_READY, nullptr);   // OK saves
+  lv_obj_add_event_cb(s_kb, wifi_cancel_cb, LV_EVENT_CANCEL, nullptr);// X closes
+}
+
+static void open_wifi_scan() {
+  show_toast("scanning...");
+  lv_timer_handler();              // paint the toast before the blocking scan
+  int n = WiFi.scanNetworks();     // blocking ~2-4s; acceptable on a button tap
+  wifi_overlay_close();
+
+  s_wifi_scr = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(s_wifi_scr);
+  lv_obj_set_size(s_wifi_scr, 480, 480);
+  lv_obj_set_style_bg_color(s_wifi_scr, M_BG, 0);
+  lv_obj_set_style_bg_opa(s_wifi_scr, LV_OPA_COVER, 0);
+  lv_obj_set_flex_flow(s_wifi_scr, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(s_wifi_scr, 6, 0);
+  lv_obj_set_style_pad_all(s_wifi_scr, 10, 0);
+  lv_obj_set_scroll_dir(s_wifi_scr, LV_DIR_VER);
+
+  lv_obj_t *title = lv_label_create(s_wifi_scr);
+  lv_label_set_text(title, n > 0 ? "PICK NETWORK" : "NO NETWORKS FOUND");
+  lv_obj_set_style_text_color(title, M_DIM, 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+
+  lv_obj_t *back = lv_btn_create(s_wifi_scr);
+  lv_obj_set_size(back, 456, 48);
+  lv_obj_set_style_bg_color(back, M_BORDER, 0);
+  lv_obj_add_event_cb(back, wifi_cancel_cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *bl = lv_label_create(back); lv_label_set_text(bl, "< back");
+  lv_obj_center(bl);
+
+  int shown = (n > 16) ? 16 : (n < 0 ? 0 : n);
+  for (int i = 0; i < shown; i++) {
+    strncpy(s_scan[i], WiFi.SSID(i).c_str(), sizeof(s_scan[i]) - 1);
+    s_scan[i][sizeof(s_scan[i]) - 1] = '\0';
+    lv_obj_t *row = lv_btn_create(s_wifi_scr);
+    lv_obj_set_size(row, 456, ROW_H);
+    lv_obj_set_style_bg_color(row, M_PANEL, 0);
+    lv_obj_set_style_border_color(row, M_BORDER, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_add_event_cb(row, wifi_scan_pick_cb, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)i);
+    lv_obj_t *lbl = lv_label_create(row);
+    char b[56];
+    snprintf(b, sizeof(b), "%s  %ddBm", s_scan[i], (int)WiFi.RSSI(i));
+    lv_label_set_text(lbl, b);
+    lv_obj_set_style_text_color(lbl, M_TEXT, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 12, 0);
+  }
+  if (n > 0) WiFi.scanDelete();
+}
+
 static void do_action(int menu_idx, int row_idx) {
   Row &row = g_menus[menu_idx].rows[row_idx];
   if (row.verb && row.verb[0] == '@') {
@@ -223,6 +410,8 @@ static void do_action(int menu_idx, int row_idx) {
     else if (!strcmp(row.verb, "@rot"))   { display_set_rotated(!display_is_rotated()); show_toast("rotated"); build_list(menu_idx); }
     else if (!strcmp(row.verb, "@blt")) { panel_backlight(false); lv_timer_handler(); delay(250); panel_backlight(true); show_toast("backlight"); }
     else if (!strcmp(row.verb, "@recon")) { net_force_reconnect(); show_toast("reconnecting"); }
+    else if (!strcmp(row.verb, "@wifiedit")) { open_wifi_edit(nullptr); }
+    else if (!strcmp(row.verb, "@wifiscan")) { open_wifi_scan(); }
     return;
   }
   if (row.confirm) { open_modal(menu_idx, row_idx); return; }
@@ -231,7 +420,7 @@ static void do_action(int menu_idx, int row_idx) {
 
 // ---- row tap -------------------------------------------------------------- //
 static void row_cb(lv_event_t *e) {
-  if (s_modal) return;   // modal eats taps
+  if (s_modal || s_wifi_scr) return;   // modal / wifi overlay eats taps
   intptr_t packed = (intptr_t)lv_event_get_user_data(e);
   int menu_idx = (int)(packed >> 8);
   int row_idx  = (int)(packed & 0xFF);

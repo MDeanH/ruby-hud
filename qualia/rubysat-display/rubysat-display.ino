@@ -180,40 +180,60 @@ static void dots_update(lv_event_t *e) {
 // --------------------------------------------------------------------------- //
 // WiFi
 // --------------------------------------------------------------------------- //
+// Active Wi-Fi credentials. Loaded from NVS at boot (see setup); the secrets.h
+// values are only the first-boot defaults. Editable on-device via the MENU ->
+// WI-FI page, which calls wifi_save_creds() below. No hardcoded fallback SSID.
+static char g_wifi_ssid[40] = WIFI_SSID;
+static char g_wifi_pass[64] = WIFI_PASS;
+
 static void wifi_begin() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);                   // latency over power here
-  // Try primary creds; the ESP32 core will also remember/roam. We attempt the
-  // hotspot SSID as a fallback if the primary never associates.
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(g_wifi_ssid, g_wifi_pass);
 }
 
-// Non-blocking: returns true once associated. Round-robins primary <-> SSID2
-// every ~12s so the device can recover whichever network appears -- e.g. it
-// boots near the hotspot but the home AP comes up later, or vice-versa. (The
-// old code latched on SSID2 once and was then stuck retrying only SSID2 until
-// reboot.)
+// Non-blocking: returns true once associated. Re-kicks the configured creds
+// every ~12s while disconnected so a network that appears late still gets us.
 static bool wifi_pump() {
   static uint32_t started = 0;
-  static bool on_secondary = false;
   if (WiFi.status() == WL_CONNECTED) return true;
-
   uint32_t now = millis();
   if (started == 0) started = now;
-
-  // Every 12s with no link, switch to the other credential set (if SSID2 is
-  // configured) and retry. With no SSID2 we just keep retrying the primary.
   if ((now - started) > 12000) {
-    if (strlen(WIFI_SSID2) > 0) {
-      on_secondary = !on_secondary;
-      if (on_secondary) WiFi.begin(WIFI_SSID2, WIFI_PASS2);
-      else              WiFi.begin(WIFI_SSID, WIFI_PASS);
-    } else {
-      WiFi.begin(WIFI_SSID, WIFI_PASS);  // re-kick the primary
-    }
+    WiFi.begin(g_wifi_ssid, g_wifi_pass);
     started = now;
   }
   return false;
+}
+
+// Persist new Wi-Fi credentials to NVS and reconnect immediately. Called from
+// the on-device WI-FI edit page (menu_ui.cpp) via extern. Survives reboot.
+void wifi_save_creds(const char *ssid, const char *pass) {
+  if (!ssid) return;
+  strncpy(g_wifi_ssid, ssid, sizeof(g_wifi_ssid) - 1);
+  g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
+  strncpy(g_wifi_pass, pass ? pass : "", sizeof(g_wifi_pass) - 1);
+  g_wifi_pass[sizeof(g_wifi_pass) - 1] = '\0';
+  g_prefs.putString("wifi_ssid", g_wifi_ssid);
+  g_prefs.putString("wifi_pass", g_wifi_pass);
+  // Drop the TCP link + cached Ruby IP and re-associate with the new creds.
+  if (sock.connected()) sock.stop();
+  have_ruby_ip = false;
+  WiFi.disconnect();
+  WiFi.begin(g_wifi_ssid, g_wifi_pass);
+}
+
+const char *wifi_cfg_ssid() { return g_wifi_ssid; }
+
+// Human-readable association state for the WI-FI page Status row.
+const char *wifi_status_str() {
+  switch (WiFi.status()) {
+    case WL_CONNECTED:     return "Connected";
+    case WL_NO_SSID_AVAIL: return "Not found";
+    case WL_CONNECT_FAILED: return "Auth failed";
+    case WL_CONNECTION_LOST: return "Lost";
+    default:               return "Connecting";   // idle/disconnected: retrying
+  }
 }
 
 // Resolve ruby.local via mDNS; fall back to RUBY_FALLBACK_IP. Cheap to re-call.
@@ -446,6 +466,16 @@ void setup() {
   g_prefs.begin("rubysat", false);
   g_rot180 = g_prefs.getUChar("rot180", 0) ? true : false;
   g_mirror = g_prefs.getUChar("mirror", 0) ? true : false;
+  // Wi-Fi creds: NVS overrides the secrets.h first-boot defaults. Editable on
+  // the device (MENU -> WI-FI); persisted by wifi_save_creds().
+  {
+    String ns = g_prefs.getString("wifi_ssid", WIFI_SSID);
+    String np = g_prefs.getString("wifi_pass", WIFI_PASS);
+    strncpy(g_wifi_ssid, ns.c_str(), sizeof(g_wifi_ssid) - 1);
+    g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
+    strncpy(g_wifi_pass, np.c_str(), sizeof(g_wifi_pass) - 1);
+    g_wifi_pass[sizeof(g_wifi_pass) - 1] = '\0';
+  }
 
   // 3) Tileview: 3 horizontally-swipeable tiles (GAUGES / STATUS / MENU).
   g_tileview = lv_tileview_create(lv_scr_act());
