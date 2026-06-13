@@ -30,12 +30,20 @@ from .signals import _run
 from .theme import (ACCENT, ACCENT_GLOW, CARD_BORDER, CARD_EDGE, DANGER, OK,
                     PANEL, ROW_A, ROW_B, TEXT, TEXT_DIM, TICK, WARN, font, mix)
 
+from . import config
+
 BG = theme.BG
 
 
-def _to_f(c):
-    """Display-layer C -> F. All internal state/thresholds stay Celsius."""
-    return c * 9.0 / 5.0 + 32.0
+def _disp_temp(c):
+    """Celsius -> displayed value in the active unit (see config). Internal
+    state + thresholds stay Celsius; this is display-layer only."""
+    return config.c_to_disp(c)
+
+
+def _disp_speed(mph):
+    """mph -> displayed value in the active speed unit (see config)."""
+    return config.mph_to_disp(mph)
 
 
 class Page:
@@ -87,13 +95,14 @@ class GaugesPage(Page):
                            scale=SS)
 
         # Speed unit, baseline-aligned with the (dynamic) numerals.
+        spd_unit = config.speed_label()
         try:
             draw.text(((self.SPD_RIGHT + 12) * SS, self.SPD_BASE * SS),
-                      "MPH", font=font(40 * SS, "bold"), fill=TEXT_DIM,
+                      spd_unit, font=font(40 * SS, "bold"), fill=TEXT_DIM,
                       anchor="ls")
         except Exception:
             draw.text(((self.SPD_RIGHT + 12) * SS,
-                       (self.SPD_BASE - 34) * SS), "MPH",
+                       (self.SPD_BASE - 34) * SS), spd_unit,
                       font=font(40 * SS, "bold"), fill=TEXT_DIM)
 
         # Gear plate (letter is dynamic).
@@ -103,7 +112,7 @@ class GaugesPage(Page):
         # Pill meter chrome.
         y, h, w = self.PILL_Y * SS, self.PILL_H * SS, self.PILL_W * SS
         specs = (
-            ("COOL", "F", self._coolant_markers(False)),
+            ("COOL", config.temp_label(), self._coolant_markers(False)),
             ("VOLT", "V", self._volt_markers(False)),
             ("THR", "%", None),
         )
@@ -149,7 +158,7 @@ class GaugesPage(Page):
 
     def _speed_and_gear(self, draw, snap):
         speed = _num(snap.speed_mph)
-        spd = "--" if speed is None else "%d" % int(round(speed))
+        spd = "--" if speed is None else "%d" % int(round(_disp_speed(speed)))
         gauges.kerned_right(draw, self.SPD_RIGHT * SS, self.SPD_BASE * SS,
                             spd, font(170 * SS, "bold"), TEXT,
                             tracking=-8 * SS)
@@ -160,7 +169,7 @@ class GaugesPage(Page):
         y, h, w = self.PILL_Y * SS, self.PILL_H * SS, self.PILL_W * SS
 
         coolant = _num(snap.coolant_c)
-        cval = None if coolant is None else "%d" % int(round(_to_f(coolant)))
+        cval = None if coolant is None else "%d" % int(round(_disp_temp(coolant)))
         gauges.pill_fill(img, draw, self.PILL_XS[0] * SS, y, w, h,
                          _frac(snap.coolant_c, COOLANT_LO, COOLANT_HI),
                          cval, markers=self._coolant_markers(coolant),
@@ -230,11 +239,17 @@ class VehiclePage(Page):
         for (title, unit), cell in zip(self._TILES, cells):
             x, y = cell[0] * SS, cell[1] * SS
             w, h = self.TILE_W * SS, self.TILE_H * SS
+            # Resolve unit labels that follow the active config.
+            u = unit
+            if title in ("COOLANT", "PI TEMP"):
+                u = config.temp_label()
+            elif title == "SPEED":
+                u = config.speed_label()
             gauges.card(draw, x, y, x + w, y + h, radius=14 * SS, scale=SS)
             gauges.tracked_text(draw, x + 22 * SS, y + 16 * SS, title,
                                 font(19 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
-            if unit:
-                draw.text((x + w - 22 * SS, y + 18 * SS), unit,
+            if u:
+                draw.text((x + w - 22 * SS, y + 18 * SS), u,
                           font=font(20 * SS, "regular"), fill=TEXT_DIM,
                           anchor="ra")
         # Chip-strip separator.
@@ -255,7 +270,8 @@ class VehiclePage(Page):
         """Return (value_str|None, color, sub|None) for a tile title."""
         if title == "SPEED":
             v = _num(snap.speed_mph)
-            return (None if v is None else "%d" % int(round(v))), TEXT, None
+            return (None if v is None
+                    else "%d" % int(round(_disp_speed(v)))), TEXT, None
         if title == "RPM":
             v = _num(snap.rpm)
             # ND1 2.0L redline 6800 rpm.
@@ -269,13 +285,15 @@ class VehiclePage(Page):
             col = TEXT
             if v is not None:
                 col = DANGER if v > 110 else (WARN if v > 100 else OK)
-            return (None if v is None else "%d" % int(round(_to_f(v)))), col, None
+            return (None if v is None
+                    else "%d" % int(round(_disp_temp(v)))), col, None
         if title == "PI TEMP":
             v = _num(snap.cpu_temp_c)
             col = TEXT
             if v is not None:
                 col = DANGER if v > 80 else (WARN if v > 70 else OK)
-            return (None if v is None else "%d" % int(round(_to_f(v)))), col, None
+            return (None if v is None
+                    else "%d" % int(round(_disp_temp(v)))), col, None
         if title == "FUEL":
             v = _num(snap.fuel_pct)
             col = TEXT
@@ -772,7 +790,7 @@ class SystemPage(Page):
         temp = get_temp_c()
         tv, tcol = None, TEXT
         if temp is not None:
-            tv = "%d F" % int(round(_to_f(temp)))
+            tv = "%d %s" % (int(round(_disp_temp(temp))), config.temp_label())
             tcol = DANGER if temp > 80 else (WARN if temp > 70 else OK)
         self._tile(draw, cells[1], tv, tcol, None)
 
@@ -1166,7 +1184,8 @@ class AIVisionPage(Page):
         chips.append(("SRC " + (source or "?").upper(), ok_col))
         chips.append(("INF %d fps" % int(round(inf)) if inf is not None
                       else "INF -- fps", TEXT_DIM))
-        chips.append(("HAILO %d F" % int(round(_to_f(htemp)))
+        chips.append(("HAILO %d %s" % (int(round(_disp_temp(htemp))),
+                                       config.temp_label())
                       if htemp is not None else "HAILO --", TEXT_DIM))
         chips.append((("LIVE" if live else (state or "?").upper()),
                       OK if live else WARN))

@@ -168,7 +168,12 @@ def _draw_nav_static(draw, img, pages, idx):
 def _page_static(pages, idx, w: int, h: int) -> Image.Image:
     """Cached static layer for a page: global chrome + page chrome + nav."""
     page = pages[idx]
-    key = (str(getattr(page, "name", "PAGE")), w, h)
+    # Units are baked into static labels (gauge pill / tile unit text), so the
+    # active unit is part of the cache identity -- toggling C/F or MPH/KM-h
+    # changes the key and forces a one-time re-render of the static layer.
+    from . import config
+    key = (str(getattr(page, "name", "PAGE")), w, h,
+           config.temp_unit(), config.speed_unit())
     cached = _STATIC_CACHE.get(key)
     if cached is not None:
         return cached
@@ -211,9 +216,11 @@ def _draw_top_bar(draw, snap):
     x -= tw
     gauges.status_chip(draw, x, 16 * SS, "TS " + ts.upper(), ts_col, scale=SS)
 
+    from . import config
     cpu = snap.cpu_temp_c
     cpu_txt = ("CPU --" if cpu is None
-               else "CPU %d" % int(round(cpu * 9.0 / 5.0 + 32.0)))  # shown in F
+               else "CPU %d%s" % (int(round(config.c_to_disp(cpu))),
+                                  config.temp_label()))
     cfont = font(24 * SS, "bold")
     cw = gauges._text_size(draw, cpu_txt, cfont)[0]
     x -= cw + 26 * SS

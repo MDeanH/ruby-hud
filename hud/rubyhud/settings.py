@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import time
 
-from . import gauges, updates
+from . import config, gauges, recorder, updates
 from .menu import MenuItem, TouchMenu
 from .render import SS
 from .theme import (ACCENT_GLOW, BG, DANGER, OK, TEXT, TEXT_DIM, WARN, font,
@@ -112,9 +112,94 @@ class SettingsPage(TouchMenu):
                      enabled_fn=lambda: updates.previous_version() is not None,
                      confirm=self._confirm_rollback, danger=True,
                      on_tap=self._do_rollback),
+            MenuItem("CONFIGURE", submenu=self._configure_items),
             MenuItem("VERSION / ABOUT", submenu=self._about_items),
             MenuItem("SATELLITE", submenu=self._satellite_items),
             MenuItem("SERVICE", submenu=self._service_items),
+        ]
+
+    # -- configure hub -------------------------------------------------------- #
+    def _configure_items(self) -> list:
+        return [
+            MenuItem("CUSTOMIZE SCREENS", submenu=self._satellite_items),
+            MenuItem("WI-FI", submenu=self._wifi_items),
+            MenuItem("TEMPERATURE", value_fn=config.temp_label,
+                     on_tap=lambda ctx: config.toggle_temp_unit()),
+            MenuItem("SPEED UNITS", value_fn=config.speed_label,
+                     on_tap=lambda ctx: config.toggle_speed_unit()),
+            MenuItem("RECORDING", value_fn=self._recording_value,
+                     submenu=self._recording_items),
+            # Subsystems with hardware/feasibility prerequisites: surfaced as
+            # honest 'planned' entries (dimmed) until each is built out.
+            MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
+                     enabled_fn=lambda: False),
+            MenuItem("BLUETOOTH", value_fn=lambda: "planned",
+                     enabled_fn=lambda: False),
+            MenuItem("CARPLAY", value_fn=lambda: "planned",
+                     enabled_fn=lambda: False),
+            MenuItem("NAVIGATION", value_fn=lambda: "planned",
+                     enabled_fn=lambda: False),
+        ]
+
+    @staticmethod
+    def _recording_value():
+        return "REC" if recorder.any_active() else "off"
+
+    def _recording_items(self) -> list:
+        return [
+            MenuItem("RECORD SCREEN", value_fn=recorder.screen_status,
+                     on_tap=lambda ctx: recorder.toggle_screen()),
+            MenuItem("RECORD CAMERA", value_fn=recorder.camera_status,
+                     on_tap=lambda ctx: recorder.toggle_camera()),
+            MenuItem("LAST FILE", value_fn=recorder.last_file_name),
+            MenuItem("SAVED TO", value_fn=lambda: "~/recordings"),
+        ]
+
+    @staticmethod
+    def _wifi_items() -> list:
+        # value_fn runs every frame on the render thread, so the (expensive)
+        # iwgetid/hostname/nmcli calls are TTL-cached -- they re-run at most once
+        # every few seconds, never per frame. Fresh cache per submenu open.
+        from .signals import _run
+
+        cache: dict = {}
+
+        def cached(key, ttl, fn):
+            now = time.monotonic()
+            ent = cache.get(key)
+            if ent is not None and now - ent[1] < ttl:
+                return ent[0]
+            try:
+                v = fn()
+            except Exception:
+                v = "--"
+            cache[key] = (v, now)
+            return v
+
+        def ssid():
+            return cached("ssid", 4.0, lambda: (
+                (_run(["iwgetid", "-r"], timeout=2.0) or "").strip() or "--"))
+
+        def ip():
+            def _q():
+                parts = (_run(["hostname", "-I"], timeout=2.0) or "").split()
+                return parts[0] if parts else "--"
+            return cached("ip", 4.0, _q)
+
+        def sig():
+            def _q():
+                out = _run(["nmcli", "-t", "-f", "ACTIVE,SIGNAL", "dev", "wifi"],
+                           timeout=2.0)
+                for line in (out or "").splitlines():
+                    if line.startswith("yes:"):
+                        return line.split(":", 1)[1].strip() + "%"
+                return "--"
+            return cached("sig", 6.0, _q)
+
+        return [
+            MenuItem("SSID", value_fn=ssid),
+            MenuItem("IP", value_fn=ip),
+            MenuItem("SIGNAL", value_fn=sig),
         ]
 
     # -- satellite (4" dash HUD) control ------------------------------------- #
