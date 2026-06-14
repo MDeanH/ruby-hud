@@ -119,7 +119,6 @@ class SettingsPage(TouchMenu):
                      on_tap=lambda ctx: config.toggle_temp_unit()),
             MenuItem("SPEED UNITS", value_fn=config.speed_label,
                      on_tap=lambda ctx: config.toggle_speed_unit()),
-            MenuItem("CUSTOMIZE SCREENS", submenu=self._satellite_items),
             MenuItem("WI-FI", submenu=self._wifi_items),
             MenuItem("RECORDING", value_fn=self._recording_value,
                      submenu=self._recording_items),

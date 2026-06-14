@@ -44,9 +44,10 @@ static void send_cmd(const char *cmd, int x, int y);
 // --------------------------------------------------------------------------- //
 // LVGL display plumbing
 // --------------------------------------------------------------------------- //
-// Partial draw buffer in PSRAM. 720 wide * N lines * 2 bytes (RGB565). A buffer
-// of ~1/10th the screen (72 lines) keeps RAM modest while flushing fast. LVGL
-// v8 single-buffer partial render is plenty for these gauges.
+// Partial draw buffer in PSRAM. 480 wide * N lines * 2 bytes (RGB565). A buffer
+// of ~1/10th the screen (48 lines) keeps RAM modest while flushing fast. LVGL
+// v8 single-buffer partial render is plenty for these gauges. (Logical res is
+// 480x480; some marketing/docs refer to a 720-class panel capability.)
 static const uint32_t SCREEN_W = 480;
 static const uint32_t SCREEN_H = 480;
 static const uint32_t DRAW_LINES = 48;                  // px/buffer (2 bufs)

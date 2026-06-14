@@ -1,12 +1,8 @@
 # Qualia rubysat satellite display
 
-A second screen for Ruby. The **Adafruit Qualia ESP32-S3** (4" 720×720 RGB-666,
-panel TL040HDS20) renders the gauges **locally in LVGL** and receives live
-vehicle state from the Ruby Pi over Wi-Fi. The Pi runs `rubysat` (a small TCP
-server, port 7878) that maps the existing rubyhud `Snapshot` + vision status +
-SoC temp into a newline-delimited JSON stream. The Qualia's cap-touch sends
-commands back. Fully decoupled, network-only — no wires between the Pi and the
-display.
+A second screen for Ruby. The **Adafruit Qualia ESP32-S3** (4" panel TL040HDS20 / TL040WVS03) renders the gauges **locally in LVGL** and receives live vehicle state from the Ruby Pi over Wi-Fi or direct USB CDC. The Pi runs `rubysat` (a small TCP server, port 7878) that maps the existing rubyhud `Snapshot` + vision status + SoC temp into a newline-delimited JSON stream. The Qualia's cap-touch sends commands back. Fully decoupled, network-only — no wires between the Pi and the display.
+
+**Resolution note**: Firmware, touch driver, and panel timings are 480×480 logical (SCREEN_W/H = 480, TOUCH_PANEL_* = 480, draw buffer and LVGL UI sized for 480). The panel is often marketed as "720×720 capable"; the current bring-up and touch map use the verified 480×480 timings that actually work on the TL040WVS03 hardware in this car. See also `rubysat-display.ino`, `touch.h`, `panel.cpp`, and the v3.2.1 history note.
 
 Firmware lives in [`rubysat-display/`](rubysat-display/).
 
@@ -19,7 +15,7 @@ controller (I2C `0x48`) on a single board. Power it over USB-C.
 | Fact | Value |
 |------|-------|
 | Board | Adafruit Qualia ESP32-S3 (8MB octal PSRAM, 16MB flash) |
-| Panel | TL040HDS20, 720×720, 4" square, RGB-666 dot-clock, self-initializing |
+| Panel | TL040HDS20 / TL040WVS03, 480×480 logical (firmware + touch + timings; marketed "720" class), 4" square, RGB-666, self-initializing |
 | Pixel clock | 16 MHz |
 | HSYNC | pulse 2, front porch 46, back porch 44 |
 | VSYNC | pulse 2, front porch 16, back porch 18 |
@@ -78,8 +74,7 @@ the connection dot turns red.
 
 ## UI
 
-720×720 dark theme matching the HUD (`bg #07090c`, accent Soul Red `#d0273b`,
-text `#f3f7fb`):
+480×480 logical resolution (dark theme matching the HUD: `bg #07090c`, accent Soul Red `#d0273b`, text `#f3f7fb`):
 
 - Full-screen **RPM arc** (0–8000, redline ≥6500 turns the arc red).
 - Large **MPH** number dead center, `MPH` label under it.

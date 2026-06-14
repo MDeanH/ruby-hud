@@ -232,7 +232,7 @@ class VehiclePage(Page):
     # (title, unit) per tile, row-major; values supplied per frame by _value.
     _TILES = (
         ("SPEED", "MPH"), ("RPM", ""), ("GEAR", ""), ("COOLANT", "F"),
-        ("FUEL", "%"), ("THROTTLE", "%"), ("MAP", "kPa"), ("PI TEMP", "F"),
+        ("FUEL", "%"), ("THROTTLE", "%"), ("MAP", "kPa"), ("SoC", "F"),
     )
 
     def _cells(self):
@@ -250,7 +250,7 @@ class VehiclePage(Page):
             w, h = self.TILE_W * SS, self.TILE_H * SS
             # Resolve unit labels that follow the active config.
             u = unit
-            if title in ("COOLANT", "PI TEMP"):
+            if title in ("COOLANT", "SoC"):
                 u = config.temp_label()
             elif title == "SPEED":
                 u = config.speed_label()
@@ -296,7 +296,7 @@ class VehiclePage(Page):
                 col = DANGER if v > 110 else (WARN if v > 100 else OK)
             return (None if v is None
                     else "%d" % int(round(_disp_temp(v)))), col, None
-        if title == "PI TEMP":
+        if title == "SoC":
             v = _num(snap.cpu_temp_c)
             col = TEXT
             if v is not None:
@@ -828,8 +828,34 @@ class SystemPage(Page):
         if volts is not None:
             pv = "%.2f V" % volts
             pcol = DANGER if volts < 4.8 else (WARN if volts < 4.95 else OK)
-        self._tile(draw, cells[5], pv, pcol, None,
-                   badges=self._power_badges())
+
+        # UPS telemetry (best-effort, never raises). Surface state + AC/batt
+        # info in the POWER tile so the SYSTEM page shows the power-safety net
+        # that is already running (even while the daemon is disarmed).
+        ups = ctx.get("ups")
+        if ups is None:
+            ups = UpsClient()
+            ctx["ups"] = ups
+        ust = ups.status()
+        ubadges = list(self._power_badges())
+        usub = None
+        if not ups.offline(ust):
+            st = str(ust.get("state") or "ONLINE").upper()
+            ac = ust.get("ac_present")
+            bp = ust.get("battery_pct")
+            if ac is True:
+                ubadges.append(("AC", OK))
+            elif ac is False:
+                ubadges.append(("BAT", WARN))
+            if bp is not None:
+                try:
+                    ubadges.append(("%d%%" % int(round(float(bp))), TEXT_DIM))
+                except Exception:
+                    pass
+            # Compact sub for the tile bottom (falls back to throttled badges only)
+            usub = "UPS %s" % st[:6]
+        self._tile(draw, cells[5], pv, pcol, usub,
+                   badges=ubadges)
 
     def _sparkline(self, draw, cell, hist):
         """Last 60 CPU samples as a cheap accent polyline."""
@@ -1043,6 +1069,62 @@ class VisionClient:
             except Exception:
                 pass
             return False
+
+
+# --------------------------------------------------------------------------- #
+# UpsClient — mirrors VisionClient pattern for /dev/shm/rubyups/status.json
+# --------------------------------------------------------------------------- #
+# The rubyups daemon (when present) writes a best-effort status drop each poll.
+# HUD consumes it read-only with mtime gate + full guard so a missing UPS or
+# malformed drop never raises into the SYSTEM render. See ups/README.md for the
+# payload schema and the conservative state machine (the daemon itself ships
+# disabled + dry_run; this is currently read-only telemetry surface).
+_UPS_DIR_DEFAULT = "/dev/shm/rubyups"
+_UPS_STALE_S = 5.0
+
+
+class UpsClient:
+    """Read-only view of the rubyups tmpfs status drop.
+
+    status() cached on mtime. offline() returns True for missing/stale/NO_HAT.
+    Everything is failure-guarded; the SYSTEM page must remain renderable even
+    if the UPS HAT is unplugged or the daemon is not running.
+    """
+
+    def __init__(self, ups_dir=None):
+        self.dir = ups_dir or os.environ.get("RUBYUPS_DIR", _UPS_DIR_DEFAULT)
+        self._path = os.path.join(self.dir, "status.json")
+        self._mtime = None
+        self._status = None
+
+    def status(self):
+        try:
+            mtime = os.path.getmtime(self._path)
+        except Exception:
+            self._mtime = None
+            self._status = None
+            return None
+        if mtime != self._mtime:
+            try:
+                with open(self._path, "rb") as fh:
+                    self._status = json.loads(fh.read().decode("utf-8"))
+                self._mtime = mtime
+            except Exception:
+                pass  # keep previous good snapshot
+        return self._status
+
+    def offline(self, st=None):
+        st = st if st is not None else self.status()
+        if not isinstance(st, dict):
+            return True
+        # Explicit NO_HAT from daemon means blind (no trigger possible).
+        if str(st.get("state") or "").upper() == "NO_HAT":
+            return True
+        try:
+            ts = float(st.get("ts"))
+        except Exception:
+            return True
+        return (time.time() - ts) > _UPS_STALE_S
 
 
 class AIVisionPage(Page):

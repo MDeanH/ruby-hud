@@ -36,7 +36,7 @@ extern void        link_mode_cycle();
 extern const char *link_mode_str();
 extern const char *link_active_str();
 
-#define FW_VERSION "3.7.0-sat"
+#define FW_VERSION "3.10.0-sat"
 
 // --- palette (mirror ui.cpp) ----------------------------------------------- //
 #define M_BG      lv_color_hex(0x07090c)

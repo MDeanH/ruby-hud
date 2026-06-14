@@ -11,11 +11,11 @@ Signals wired into `hud/rubyhud/signals.py` `_decode_mx5()` (all big-endian):
 | Vehicle speed | 0x202 | 2-3 | raw * 0.01 km/h (* 0.621371 -> mph) |
 | Throttle/accel % | 0x202 | 4-5 | raw * 0.0015625 |
 | Coolant degC | 0x420 | 0 | raw - 40 |
-| Ambient degC | 0x420 | 6-7 | raw * 0.25 - 3200 |
 | Fuel | 0x9E | 5 | raw * 0.2 L (ND tank ~45 L -> %) |
-| Gear (MT actual) | 0xFD | bit 19, len 3 | TODO: verify with shift test |
+| Gear (MT actual) | 0xFD | bit 19, len 3 | on-car reverse notes exist (signals.py); full shift-test verification still TODO |
 | Wheel speeds | 0x215 (+ABS) | 0-1.. | raw * 0.01 - 100 km/h |
-| Roof status | 0x472 | - | TODO: verify open/close |
+| Roof status | 0x472 | - | on-car reverse notes exist (signals.py _ROOF_MAP); open/close verification still TODO |
 
-NOT on HS-CAN: oil temperature, system/battery voltage (only a low-key-fob-
-battery warning bit). The Sport-gauge oil temp is computed in the cluster.
+NOT on HS-CAN: oil temperature, system/battery voltage (only a low-key-fob battery warning bit; HUD shows battery voltage from other sources or `--` in live mode while sim supplies values), intake/manifold temp (PI TEMP tile shows CPU SoC temp). The Sport-gauge oil temp is computed in the cluster.
+
+Ambient temperature (0x420 b6-7) appears in the DBC and Snapshot.ambient_c but is intentionally not decoded on this ND1 in `signals.py` (see ND1 notes). Gear @0xFD and roof @0x472 have on-car notes but remain marked for fuller verification.

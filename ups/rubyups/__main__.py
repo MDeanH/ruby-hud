@@ -21,8 +21,8 @@ Run options (override config file + RUBY_UPS_* env):
   --status-path PATH   status drop (default /dev/shm/rubyups/status.json).
 
 SAFE DEFAULTS: with no config the daemon ships DISABLED + DRY-RUN -- it reads and
-publishes telemetry but never powers Ruby off. See README / MEMORY for the one
-"ARM IT" change once Michael is comfortable.
+publishes telemetry but never powers Ruby off. See ups/README.md for the one
+"ARM IT" change (set enabled + !dry_run) once Michael is comfortable.
 
 All hardware deps (smbus2) import lazily, so this runs on a bare host: with no
 PiPower 5 present it enters NO_HAT mode (telemetry blind, never triggers) and
