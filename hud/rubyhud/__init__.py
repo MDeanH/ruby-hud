@@ -1,3 +1,3 @@
 """rubyhud — Mazda MX-5 heads-up display render engine."""
 
-__version__ = "3.16.4"
+__version__ = "3.16.5"
