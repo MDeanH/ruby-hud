@@ -282,7 +282,7 @@ class CsiSource:
 class UvcSource:
     """USB / UVC webcam via cv2.VideoCapture (V4L2, MJPG, latest-frame)."""
 
-    def __init__(self, index: int = 0):
+    def __init__(self, index: int = 0, mjpg: bool = True):
         self.name = "usb"
         self._idx = int(index)
         try:
@@ -290,39 +290,50 @@ class UvcSource:
         except Exception as exc:
             raise SourceUnavailable("cv2 import failed: %s" % exc)
         self._cv2 = cv2
-        try:
-            cap = cv2.VideoCapture(self._idx, cv2.CAP_V4L2)
-            if not cap or not cap.isOpened():
-                raise SourceUnavailable("VideoCapture(%d) not opened"
-                                        % self._idx)
-            cap.set(cv2.CAP_PROP_FOURCC,
-                    cv2.VideoWriter_fourcc(*"MJPG"))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_W)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_H)
+        # Try MJPG first (color webcams), then the device's NATIVE format. The
+        # latter is essential for raw feeds like the RealSense IR (GREY/Y8) which
+        # don't do MJPG. A UVC device also exposes a metadata node that opens but
+        # never yields a frame, so warm up + verify a real frame before
+        # committing -- the caller then tries the next candidate node.
+        last = None
+        for use_mjpg in ((True, False) if mjpg else (False,)):
             try:
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except Exception:
-                pass
-            # A UVC device exposes a capture node AND a metadata node; the latter
-            # opens but never yields a frame. Warm up + verify a real frame so we
-            # never commit to a dead node (the caller then tries the next one).
-            ok = False
-            for _ in range(15):
-                r, fr = cap.read()
-                if r and fr is not None:
-                    ok = True
-                    break
-                time.sleep(0.03)
-            if not ok:
+                cap = cv2.VideoCapture(self._idx, cv2.CAP_V4L2)
+                if not cap or not cap.isOpened():
+                    raise SourceUnavailable("VideoCapture(%d) not opened"
+                                            % self._idx)
+                if use_mjpg:
+                    # MJPG color webcam: request our working resolution.
+                    cap.set(cv2.CAP_PROP_FOURCC,
+                            cv2.VideoWriter_fourcc(*"MJPG"))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_W)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_H)
+                # else NATIVE: keep the device's own resolution/format (e.g. the
+                # RealSense IR is 640x480 GREY -- forcing 1280x720 yields no
+                # frames). Downstream letterboxes from whatever size arrives.
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                ok = False
+                for _ in range(25):
+                    r, fr = cap.read()
+                    if r and fr is not None:
+                        ok = True
+                        break
+                    time.sleep(0.04)
+                if ok:
+                    self._cap = cap
+                    self.name = "usb%d" % self._idx
+                    return
                 cap.release()
-                raise SourceUnavailable("video%d opened but no frames"
+                last = SourceUnavailable("video%d opened but no frames"
                                         % self._idx)
-            self._cap = cap
-        except SourceUnavailable:
-            raise
-        except Exception as exc:
-            raise SourceUnavailable("cv2 capture init failed: %s" % exc)
-        self.name = "usb%d" % self._idx
+            except SourceUnavailable as exc:
+                last = exc
+            except Exception as exc:
+                last = SourceUnavailable("cv2 init failed: %s" % exc)
+        raise last or SourceUnavailable("video%d unusable" % self._idx)
 
     def read(self):
         try:
@@ -388,13 +399,14 @@ class VideoSource:
 # --------------------------------------------------------------------------- #
 # selection
 # --------------------------------------------------------------------------- #
-# Cycle order used by the HUD's cmd "cycle_source": usb -> csi -> (wrap to usb).
-# REAL CAMERAS ONLY — the demo 'video' (looped clip) and 'pattern' (synthetic
-# test feed) were removed 2026-06-15 per Michael so AI vision never shows a fake
-# demo. PatternSource still exists purely as the absolute last-resort fallback in
-# open_source() if every real camera fails (so the pipeline always has a frame),
-# but it is no longer in the user-facing cycle. USB is primary, CSI the fallback.
-SOURCE_CYCLE = ("usb", "csi")
+# SINGLE CAMERA, auto-locked to whatever is connected (2026-06-15 per Michael).
+# At startup open_source('auto') walks this order and locks onto the FIRST real
+# camera that actually yields frames: the RealSense D410 IR first (the chosen
+# cam), then any USB webcam, then the CSI -- so if the (finicky) RealSense IR
+# isn't there or wedges, it uses another connected camera instead of falling to
+# the demo. PatternSource is only the absolute last resort if NO camera opens.
+# The demo 'video'/'pattern' feeds stay out of the cycle.
+SOURCE_CYCLE = ("ir", "usb", "csi")
 
 
 def _usb_indices():
@@ -421,8 +433,18 @@ def _usb_indices():
             link = os.path.realpath(sysdev)
         except Exception:
             continue
-        if driver == "uvcvideo" or "/usb" in link:
-            out.append(i)
+        if driver != "uvcvideo" and "/usb" not in link:
+            continue
+        # 'usb' means a plain webcam -- exclude the RealSense (it has its own
+        # 'ir' kind), so the usb fallback is the real webcam, not the RealSense.
+        try:
+            with open("/sys/class/video4linux/video%d/name" % i) as fh:
+                name = fh.read().lower()
+        except Exception:
+            name = ""
+        if "realsense" in name or "intel" in name:
+            continue
+        out.append(i)
     return out
 
 
@@ -445,8 +467,48 @@ def _find_demo(model_dir: str):
     return None
 
 
+def _uvc_named_indices(substr):
+    """Ascending uvcvideo node indices whose /sys name contains substr (e.g.
+    'realsense'). Targets a specific device among several UVC cameras."""
+    def _idx(node):
+        try:
+            return int(node[len("/dev/video"):])
+        except ValueError:
+            return 1 << 30
+
+    out = []
+    for node in sorted(glob.glob("/dev/video[0-9]*"), key=_idx):
+        i = _idx(node)
+        if i == 1 << 30:
+            continue
+        try:
+            with open("/sys/class/video4linux/video%d/name" % i) as fh:
+                name = fh.read()
+        except Exception:
+            continue
+        if substr.lower() in name.lower():
+            out.append(i)
+    return out
+
+
 def _open_one(kind: str, model_dir: str):
     """Open a single source by kind. Raises SourceUnavailable on failure."""
+    if kind == "ir":
+        # RealSense IR as a plain mono camera (no librealsense). Try each
+        # RealSense uvc node with the device's NATIVE format (GREY/Y8) -- the
+        # Z16 depth node yields no cv2 frame and is skipped by the frame-verify.
+        idxs = _uvc_named_indices("realsense") or _uvc_named_indices("intel")
+        if not idxs:
+            raise SourceUnavailable("no RealSense IR node found")
+        last = None
+        for i in idxs:
+            try:
+                src = UvcSource(i, mjpg=False)
+                src.name = "ir%d" % i
+                return src
+            except SourceUnavailable as exc:
+                last = exc
+        raise last or SourceUnavailable("RealSense IR not usable")
     if kind == "csi":
         return CsiSource()
     if kind == "usb":
@@ -470,38 +532,16 @@ def _open_one(kind: str, model_dir: str):
     raise SourceUnavailable("unknown source kind %r" % kind)
 
 
-def _saved_source_pref():
-    """The user's saved AI-vision camera choice from the shared rubyhud config
-    (the same JSON rubyhud writes), or None. Read directly so this module stays
-    decoupled from the rubyhud package. Honoured when --source is 'auto'."""
-    import json
-    path = os.environ.get(
-        "RUBYHUD_CONFIG",
-        os.path.join(os.path.expanduser("~"), "hud-state",
-                     "rubyhud-config.json"))
-    try:
-        with open(path) as fh:
-            v = json.load(fh).get("vision_source")
-    except Exception:
-        return None
-    return v if v in ("usb", "csi", "video", "pattern") else None
-
-
 def open_source(pref: str = "auto", model_dir: str = ""):
     """Open a source. Returns (source, kind).
 
-    pref="auto" honours the saved vision_source (CONFIGURE camera selector),
-    then falls back through the rest of SOURCE_CYCLE (usb -> csi -> video ->
-    pattern), each guarded. A specific kind tries only that kind first but still
-    falls back so the pipeline always has a frame producer.
+    pref="auto" walks SOURCE_CYCLE (currently just the RealSense IR camera),
+    each guarded; the absolute last-resort is PatternSource so the pipeline
+    always has a frame producer. A specific kind tries that kind first.
     """
     pref = (pref or "auto").lower()
     if pref == "auto":
-        saved = _saved_source_pref()
-        if saved:
-            order = (saved,) + tuple(k for k in SOURCE_CYCLE if k != saved)
-        else:
-            order = SOURCE_CYCLE
+        order = SOURCE_CYCLE
     else:
         # Try the requested kind first, then the rest of the cycle.
         rest = tuple(k for k in SOURCE_CYCLE if k != pref)

@@ -260,10 +260,7 @@ def _draw_nav_static(draw, img, pages, idx):
             img.paste(g, (int(cx - g.width / 2), int(cy - g.height / 2)), g)
         col = ACCENT if active else mix(BG, TEXT_DIM, 0.55)
         _page_glyph(draw, getattr(visible[i], "name", ""), cx, cy, r, col, SS)
-    # active page label, centred under its icon.
-    gauges.tracked_text_center(draw, centers[vidx], DOCK_LABEL_Y * SS,
-                               str(getattr(cur, "name", "")),
-                               font(13 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
+    # Pure-icon dock — no text labels (the highlighted icon marks the page).
 
 
 def _page_static(pages, idx, w: int, h: int) -> Image.Image:
