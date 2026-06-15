@@ -211,18 +211,16 @@ def _page_static(pages, idx, w: int, h: int) -> Image.Image:
 # --------------------------------------------------------------------------- #
 def _draw_top_bar(draw, snap):
     """Dynamic top bar: source badge, clock / cpu / tailscale chips."""
-    # Source badge (center).
+    # Source badge (center). Hidden when LIVE -- in the car that's the normal
+    # state and just clutter; SIM (sim data) and NO DATA still show as a warning
+    # that what's on screen isn't real live CAN.
     src = snap.source or "NO DATA"
-    if src == "SIM":
-        col = WARN
-    elif src == "LIVE":
-        col = OK
-    else:
-        col = TEXT_DIM
-    sfont = font(25 * SS, "bold")
-    sw = gauges._text_size(draw, src, sfont)[0] + 40 * SS
-    gauges.status_chip(draw, SW // 2 - sw // 2, 16 * SS, src, col,
-                       filled=(src != "NO DATA"), scale=SS)
+    if src != "LIVE":
+        col = WARN if src == "SIM" else TEXT_DIM
+        sfont = font(25 * SS, "bold")
+        sw = gauges._text_size(draw, src, sfont)[0] + 40 * SS
+        gauges.status_chip(draw, SW // 2 - sw // 2, 16 * SS, src, col,
+                           filled=(src != "NO DATA"), scale=SS)
 
     # Right cluster: clock, cpu temp, tailscale chip.
     x = SW - 40 * SS
