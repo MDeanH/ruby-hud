@@ -363,9 +363,12 @@ class VehiclePage(Page):
              bool(snap.parking_brake)),
             ("REVERSE", WARN if snap.reverse else TEXT_DIM,
              bool(snap.reverse)),
-            ("SRC " + (snap.source or "?"),
-             OK if snap.source == "LIVE" else TEXT_DIM, False),
         ]
+        # door / trunk surfaced here too (full picture lives on the BODY page).
+        if snap.door_left or snap.door_right:
+            chips.append(("DOOR", DANGER, True))
+        if snap.trunk:
+            chips.append(("TRUNK", DANGER, True))
         for txt, col, filled in chips:
             w, _ = gauges.status_chip(draw, x, y, txt, col, filled=filled,
                                       scale=SS)

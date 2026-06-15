@@ -198,11 +198,9 @@ class TouchMenu(Page):
     # -- rendering ------------------------------------------------------------ #
     def render_static(self, draw, img):
         x0, x1 = self.MENU_X0 * SS, self.MENU_X1 * SS
-        gauges.card(draw, x0, self.CARD_Y0 * SS, x1, self.CARD_Y1 * SS,
-                    radius=14 * SS, scale=SS)
+        # Flat Tesla menu: no card panel, just a hairline under the breadcrumb.
         ty = (self.CARD_Y0 + self.TITLE_H) * SS
-        draw.line([(x0 + 12 * SS, ty), (x1 - 12 * SS, ty)],
-                  fill=CARD_BORDER, width=SS)
+        draw.line([(x0, ty), (x1, ty)], fill=mix(BG, CARD_BORDER, 0.6), width=SS)
 
     def render(self, draw, img, snap, ctx):
         self.scroll = max(0, min(self.scroll, self._max_scroll()))
