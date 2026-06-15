@@ -26,7 +26,7 @@ import time
 import traceback
 
 from .pages import make_ctx, make_pages
-from .render import compose_frame
+from .render import compose_frame, dock_target
 from .signals import DataLayer
 from .touch import TouchInput
 
@@ -238,9 +238,13 @@ def _apply_touch(ui, touch, pages, state) -> None:
             except Exception:
                 _log("swipe handler error:\n" + traceback.format_exc())
         elif kind == "tap":
-            # Edge-tap page nav only on visible pages; on hidden pages all taps
-            # go to the page (e.g. CAN pause / PLAYBACK pause).
-            if not hidden and ex < EDGE_PX:
+            # Dock icon nav (visible pages only) takes priority; then edge-tap
+            # prev/next; otherwise the tap goes to the page. On hidden pages all
+            # taps go to the page (e.g. CAN pause / PLAYBACK pause).
+            dock_to = None if hidden else dock_target(ex, ey, pages)
+            if dock_to is not None:
+                ui["page_idx"] = dock_to
+            elif not hidden and ex < EDGE_PX:
                 ui["page_idx"] = _visible_step(pages, idx, -1)
             elif not hidden and ex > EDGE_RIGHT_PX:
                 ui["page_idx"] = _visible_step(pages, idx, +1)

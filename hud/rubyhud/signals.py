@@ -457,16 +457,19 @@ class DataLayer:
             elif data[1] == 0x03:
                 self._roof = "OPEN"
         # ---- 0x43E HS_BCMM: door + trunk ajar (1-bit each, Motorola @0+) -----
-        # VAL_: doors 0=Closed/1=Ajar, trunk 0=Closed/1=Open. L/R-to-physical
-        # mapping confirmed on the car by opening each door (see can/README).
+        # VAL_: doors 0=Closed/1=Ajar, trunk 0=Closed/1=Open. L/R CORRECTED
+        # 2026-06-15 per Michael — the on-screen indication was backwards, so the
+        # two door bits are swapped vs the earlier mapping: bit 37 is the DRIVER
+        # door (left side of the car), bit 36 the PASSENGER door. Re-verify
+        # on-car when the Pi goes back in.
         elif arb == MX5_ID_DOORS and len(data) >= 6:
-            dl = _moto(data, 36, 1)
-            dr = _moto(data, 37, 1)
+            drv = _moto(data, 37, 1)   # driver door  -> left side
+            pas = _moto(data, 36, 1)   # passenger door -> right side
             tk = _moto(data, 47, 1)
-            if dl is not None:
-                self._door_left = bool(dl)
-            if dr is not None:
-                self._door_right = bool(dr)
+            if drv is not None:
+                self._door_left = bool(drv)
+            if pas is not None:
+                self._door_right = bool(pas)
             if tk is not None:
                 self._trunk = bool(tk)
         # ---- 0x47B HS_IC: blind-spot monitor (1-bit each, Motorola @0+) ------

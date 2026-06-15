@@ -127,6 +127,105 @@ def _chrome_static(w: int, h: int) -> Image.Image:
     return img
 
 
+# --------------------------------------------------------------------------- #
+# bottom nav dock — tappable page icons (replaces the dots). Geometry in screen
+# px (pre-SS); shared with the input layer via dock_target() for tap routing.
+# --------------------------------------------------------------------------- #
+DOCK_CY = 760
+DOCK_R = 17
+DOCK_CELL = 92
+DOCK_LABEL_Y = 788
+
+
+def _visible_pages(pages):
+    return [p for p in pages if not getattr(p, "hidden", False)]
+
+
+def _dock_centers(n):
+    cx0 = W // 2 - ((n - 1) * DOCK_CELL) // 2
+    return [cx0 + i * DOCK_CELL for i in range(n)]
+
+
+def dock_target(x, y, pages):
+    """Map a screen-px tap to a visible page's index in `pages` if it lands on a
+    dock icon, else None. Used by the input layer for icon navigation."""
+    if y < DOCK_CY - 26 or y > DOCK_CY + 30:
+        return None
+    vis = _visible_pages(pages)
+    if not vis:
+        return None
+    for i, cx in enumerate(_dock_centers(len(vis))):
+        if abs(x - cx) <= DOCK_CELL // 2:
+            try:
+                return pages.index(vis[i])
+            except ValueError:
+                return None
+    return None
+
+
+def _page_glyph(draw, name, cx, cy, r, col, S):
+    """Thin line icon for a page, centred on (cx, cy) within radius r (all SS)."""
+    import math
+    w = max(2, int(2.2 * S))
+    dot = max(2, int(2.0 * S))
+    n = (name or "").upper()
+    if n == "GAUGES":                                  # speedometer
+        draw.arc([cx - r, cy - r, cx + r, cy + r], 150, 30, fill=col, width=w)
+        a = math.radians(232)
+        draw.line([(cx, cy), (cx + r * 0.62 * math.cos(a),
+                              cy + r * 0.62 * math.sin(a))], fill=col, width=w)
+        draw.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=col)
+    elif n == "VEHICLE":                               # side-view car
+        body = [(cx - r, cy + r * 0.34), (cx - r * 0.66, cy + r * 0.34),
+                (cx - r * 0.42, cy - r * 0.12), (cx + r * 0.12, cy - r * 0.12),
+                (cx + r * 0.40, cy + r * 0.34), (cx + r, cy + r * 0.34)]
+        draw.line(body, fill=col, width=w, joint="curve")
+        for wx in (cx - r * 0.48, cx + r * 0.48):
+            wr = r * 0.20
+            draw.ellipse([wx - wr, cy + r * 0.34 - wr, wx + wr,
+                          cy + r * 0.34 + wr], outline=col, width=w)
+    elif n == "BODY":                                  # top-down car
+        draw.rounded_rectangle([cx - r * 0.52, cy - r, cx + r * 0.52, cy + r],
+                               radius=int(r * 0.5), outline=col, width=w)
+        draw.line([(cx - r * 0.52, cy - r * 0.12),
+                   (cx - r * 0.9, cy - r * 0.02)], fill=col, width=w)
+        draw.line([(cx + r * 0.52, cy - r * 0.12),
+                   (cx + r * 0.9, cy - r * 0.02)], fill=col, width=w)
+    elif n == "SYSTEM":                                # chip
+        s = r * 0.6
+        draw.rounded_rectangle([cx - s, cy - s, cx + s, cy + s],
+                               radius=int(r * 0.16), outline=col, width=w)
+        for k in (-0.5, 0.0, 0.5):
+            draw.line([(cx + k * s, cy - s), (cx + k * s, cy - r)],
+                      fill=col, width=w)
+            draw.line([(cx + k * s, cy + s), (cx + k * s, cy + r)],
+                      fill=col, width=w)
+    elif n == "CONFIGURE":                             # gear
+        for k in range(8):
+            a = math.radians(k * 45)
+            draw.line([(cx + r * 0.72 * math.cos(a), cy + r * 0.72 * math.sin(a)),
+                       (cx + r * 1.04 * math.cos(a), cy + r * 1.04 * math.sin(a))],
+                      fill=col, width=max(3, int(3 * S)))
+        draw.ellipse([cx - r * 0.62, cy - r * 0.62, cx + r * 0.62,
+                      cy + r * 0.62], outline=col, width=w)
+        draw.ellipse([cx - r * 0.24, cy - r * 0.24, cx + r * 0.24,
+                      cy + r * 0.24], fill=col)
+    elif n in ("AI VISION", "VISION"):                 # eye
+        draw.ellipse([cx - r, cy - r * 0.66, cx + r, cy + r * 0.66],
+                     outline=col, width=w)
+        draw.ellipse([cx - r * 0.34, cy - r * 0.34, cx + r * 0.34,
+                      cy + r * 0.34], outline=col, width=w)
+        draw.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=col)
+    elif n in ("CAMERAS", "CAMERA"):                   # camera
+        draw.rounded_rectangle([cx - r, cy - r * 0.6, cx + r, cy + r * 0.7],
+                               radius=int(r * 0.22), outline=col, width=w)
+        draw.ellipse([cx - r * 0.36, cy - r * 0.18, cx + r * 0.36,
+                      cy + r * 0.54], outline=col, width=w)
+    else:                                              # fallback dot
+        draw.ellipse([cx - r * 0.4, cy - r * 0.4, cx + r * 0.4, cy + r * 0.4],
+                     outline=col, width=w)
+
+
 def _draw_nav_static(draw, img, pages, idx):
     """Page dots + name (static per page) and subtle edge chevrons. Dots track
     only the VISIBLE swipe rotation; a hidden page (CAN / PLAYBACK, reached via
@@ -143,7 +242,7 @@ def _draw_nav_static(draw, img, pages, idx):
                                    tracking=3 * SS)
         return
 
-    visible = [p for p in pages if not getattr(p, "hidden", False)]
+    visible = _visible_pages(pages)
     n = len(visible)
     if n == 0:
         return
@@ -151,29 +250,20 @@ def _draw_nav_static(draw, img, pages, idx):
         vidx = visible.index(cur)
     except ValueError:
         vidx = 0
-    r = 8 * SS
-    gap = 34 * SS
-    cy = 757 * SS
-    cx0 = sw // 2 - ((n - 1) * gap) // 2
-    for i in range(n):
-        cx = cx0 + i * gap
-        box = [cx - r, cy - r, cx + r, cy + r]
-        if i == vidx:
-            g = gauges.glow_dot(int(r * 1.7), ACCENT_GLOW, strength=0.8)
-            img.paste(g, (cx - g.width // 2, cy - g.height // 2), g)
-            draw.ellipse(box, fill=ACCENT)
-        else:
-            draw.ellipse(box, fill=mix(BG, TEXT_DIM, 0.35))
-    gauges.tracked_text_center(draw, sw // 2, 783 * SS,
+    cy = DOCK_CY * SS
+    r = DOCK_R * SS
+    centers = [c * SS for c in _dock_centers(n)]
+    for i, cx in enumerate(centers):
+        active = (i == vidx)
+        if active:
+            g = gauges.glow_dot(int(r * 2.0), ACCENT_GLOW, strength=0.55)
+            img.paste(g, (int(cx - g.width / 2), int(cy - g.height / 2)), g)
+        col = ACCENT if active else mix(BG, TEXT_DIM, 0.55)
+        _page_glyph(draw, getattr(visible[i], "name", ""), cx, cy, r, col, SS)
+    # active page label, centred under its icon.
+    gauges.tracked_text_center(draw, centers[vidx], DOCK_LABEL_Y * SS,
                                str(getattr(cur, "name", "")),
-                               font(16 * SS, "bold"), TEXT_DIM, tracking=4 * SS)
-
-    # Invisible edge tap zones, hinted only by small mid-height chevrons.
-    ch = font(40 * SS, "bold")
-    gauges._centered_text(draw, 16 * SS, 400 * SS, "<", ch,
-                          mix(BG, TEXT_DIM, 0.6))
-    gauges._centered_text(draw, sw - 16 * SS, 400 * SS, ">", ch,
-                          mix(BG, TEXT_DIM, 0.6))
+                               font(13 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
 
 
 def _page_static(pages, idx, w: int, h: int) -> Image.Image:

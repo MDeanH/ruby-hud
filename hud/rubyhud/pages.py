@@ -1417,16 +1417,38 @@ class BodyView(Page):
 
     name = "BODY"
 
+    # Square image placeholder (screen px) — a top-down car image goes here later.
+    SQ = (390, 158, 890, 658)
+
     def render_static(self, draw, img):
-        gauges.tracked_text(draw, 40 * SS, 84 * SS, "BODY",
-                            font(26 * SS, "bold"), TEXT, tracking=8 * SS)
-        gauges.tracked_text(draw, 40 * SS, 116 * SS, "ND1 MX-5 RF",
+        gauges.tracked_text(draw, 40 * SS, 92 * SS, "ND1 MX-5 RF",
                             font(14 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
+        # Square image frame: faint fill + hairline border. Will be populated
+        # with a vehicle image later; the centred glyph/label is the placeholder.
+        x0, y0, x1, y1 = (v * SS for v in self.SQ)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=20 * SS,
+                               fill=mix(theme.BG, TEXT, 0.04),
+                               outline=mix(theme.BG, CARD_BORDER, 0.85),
+                               width=max(1, SS))
+        cx = (self.SQ[0] + self.SQ[2]) // 2
+        cy = (self.SQ[1] + self.SQ[3]) // 2
+        hint = mix(theme.BG, TEXT_DIM, 0.4)
+        gw = 46
+        draw.rounded_rectangle([(cx - gw) * SS, (cy - gw * 0.7) * SS,
+                                (cx + gw) * SS, (cy + gw * 0.7) * SS],
+                               radius=8 * SS, outline=hint, width=max(1, SS))
+        draw.ellipse([(cx - gw * 0.55) * SS, (cy - gw * 0.42) * SS,
+                      (cx - gw * 0.18) * SS, (cy - gw * 0.05) * SS],
+                     outline=hint, width=max(1, SS))
+        draw.line([((cx - gw * 0.8) * SS, (cy + gw * 0.5) * SS),
+                   ((cx - gw * 0.1) * SS, (cy - gw * 0.05) * SS),
+                   ((cx + gw * 0.42) * SS, (cy + gw * 0.5) * SS)],
+                  fill=hint, width=max(1, SS), joint="curve")
+        gauges.tracked_text_center(draw, cx * SS, (cy + gw + 22) * SS,
+                                   "VEHICLE IMAGE",
+                                   font(15 * SS, "bold"), hint, tracking=4 * SS)
 
     def render(self, draw, img, snap, ctx):
-        from . import bodycar
-        bodycar.draw_car(img, draw, snap, SS, cx=img.width // 2,
-                         cy=int(402 * SS), car_len=536)
         self._roof_badge(draw, snap)
         self._caption(draw, snap)
 

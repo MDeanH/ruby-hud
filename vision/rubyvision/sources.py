@@ -388,12 +388,13 @@ class VideoSource:
 # --------------------------------------------------------------------------- #
 # selection
 # --------------------------------------------------------------------------- #
-# Cycle order used by the HUD's cmd "cycle_source": usb -> csi -> video ->
-# pattern -> (wrap to usb). open_source(pref=...) accepts any of these names or
-# "auto" (the same order, each guarded; pattern is the guaranteed fallback).
-# Swapped 2026-06-15: the USB webcam is the PRIMARY vision source; the CSI
-# ov5647 is the fallback (was csi-first).
-SOURCE_CYCLE = ("usb", "csi", "video", "pattern")
+# Cycle order used by the HUD's cmd "cycle_source": usb -> csi -> (wrap to usb).
+# REAL CAMERAS ONLY — the demo 'video' (looped clip) and 'pattern' (synthetic
+# test feed) were removed 2026-06-15 per Michael so AI vision never shows a fake
+# demo. PatternSource still exists purely as the absolute last-resort fallback in
+# open_source() if every real camera fails (so the pipeline always has a frame),
+# but it is no longer in the user-facing cycle. USB is primary, CSI the fallback.
+SOURCE_CYCLE = ("usb", "csi")
 
 
 def _usb_indices():
