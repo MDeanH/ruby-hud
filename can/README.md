@@ -15,6 +15,9 @@ Signals wired into `hud/rubyhud/signals.py` `_decode_mx5()` (all big-endian):
 | Gear (MT actual) | 0xFD | bit 19, len 3 | on-car reverse notes exist (signals.py); full shift-test verification still TODO |
 | Wheel speeds | 0x215 (+ABS) | 0-1.. | raw * 0.01 - 100 km/h |
 | Roof status | 0x472 | - | on-car reverse notes exist (signals.py _ROOF_MAP); open/close verification still TODO |
+| Door left / right | 0x43E (dec 1086) | bit 36 / 37 | 1-bit 0=closed/1=ajar; drives body_overlay; open-each-door test pending (fixes L/R-to-physical mapping) |
+| Trunk / boot | 0x43E | bit 47 | 1-bit 0=closed/1=open |
+| Blind spot R / L | 0x477 (dec 1143) | bit 1 / 15 | 1-bit 0=clear/1=vehicle (BSM_Warning bit 2); drives body_overlay; drive-test pending (BSM active >~19 mph) |
 
 NOT on HS-CAN: oil temperature, system/battery voltage (only a low-key-fob battery warning bit; HUD shows battery voltage from other sources or `--` in live mode while sim supplies values), intake/manifold temp (PI TEMP tile shows CPU SoC temp). The Sport-gauge oil temp is computed in the cluster.
 

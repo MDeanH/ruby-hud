@@ -1,0 +1,339 @@
+<svg viewBox="0 0 1280 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ovTitle ovDesc">
+  <title id="ovTitle">Ruby vehicle status — driver door open, vehicle in blind spot</title>
+  <desc id="ovDesc">Top-down Tesla-style render of a 2017 Mazda MX-5 on a near-black screen. The driver (left) door is swung open, shown as a smoothly shaded grey panel with a dark aperture revealed on the body and a bright leading-edge highlight. A closed rear trunk seam is visible. To the right, a smaller dimmer grey car sits in the adjacent lane with a red crescent proximity arc on its near side, indicating a vehicle in the blind spot.</desc>
+
+  <defs>
+    <!-- ======================= BACKGROUND ======================= -->
+    <linearGradient id="bgRamp" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15181c"/>
+      <stop offset="1" stop-color="#0b0c0e"/>
+    </linearGradient>
+    <radialGradient id="stage" cx="0.42" cy="0.5" r="0.62">
+      <stop offset="0" stop-color="#1b2026" stop-opacity="0.9"/>
+      <stop offset="0.55" stop-color="#13161b" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#0b0c0e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="0.5" cy="0.5" r="0.72">
+      <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.74" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.55"/>
+    </radialGradient>
+
+    <!-- ======================= HERO BODY ======================= -->
+    <!-- cross-car (left->right) cool-grey metal: lighter along centerline -->
+    <linearGradient id="bodyCross" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0.00" stop-color="#262b31"/>
+      <stop offset="0.13" stop-color="#454d56"/>
+      <stop offset="0.30" stop-color="#929ba5"/>
+      <stop offset="0.46" stop-color="#cfd5db"/>
+      <stop offset="0.54" stop-color="#d6dce2"/>
+      <stop offset="0.70" stop-color="#a7b0ba"/>
+      <stop offset="0.86" stop-color="#5a626c"/>
+      <stop offset="1.00" stop-color="#2a2f36"/>
+    </linearGradient>
+    <!-- nose-to-tail sheen overlay, brightest mid-body -->
+    <linearGradient id="bodyLong" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.00" stop-color="#e7ebef" stop-opacity="0.30"/>
+      <stop offset="0.16" stop-color="#cdd4db" stop-opacity="0.10"/>
+      <stop offset="0.44" stop-color="#ffffff" stop-opacity="0.00"/>
+      <stop offset="0.74" stop-color="#0c0f13" stop-opacity="0.16"/>
+      <stop offset="1.00" stop-color="#06080b" stop-opacity="0.40"/>
+    </linearGradient>
+    <!-- hood/deck longitudinal shading for the centre spine catch -->
+    <linearGradient id="spine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#eef1f4" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#eef1f4" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#eef1f4" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- glass greenhouse / open-top tonneau, dark translucent -->
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2026"/>
+      <stop offset="0.5" stop-color="#0d1014"/>
+      <stop offset="1" stop-color="#070a0d"/>
+    </linearGradient>
+    <linearGradient id="glassSheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2a323b" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#3a444f" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#2a323b" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- dark cabin aperture revealed where the door pulled away -->
+    <linearGradient id="sill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#04060a"/>
+      <stop offset="0.55" stop-color="#13171d"/>
+      <stop offset="1" stop-color="#070a0e"/>
+    </linearGradient>
+
+    <!-- swung-open door panel: same family, slightly darker/flatter (turned from light) -->
+    <linearGradient id="doorMetal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.00" stop-color="#5c656f"/>
+      <stop offset="0.30" stop-color="#aeb6bf"/>
+      <stop offset="0.52" stop-color="#cfd5db"/>
+      <stop offset="0.74" stop-color="#7e8791"/>
+      <stop offset="1.00" stop-color="#3e454d"/>
+    </linearGradient>
+
+    <!-- wheels -->
+    <radialGradient id="wheel" cx="0.42" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#2b3037"/>
+      <stop offset="0.7" stop-color="#15181c"/>
+      <stop offset="1" stop-color="#070809"/>
+    </radialGradient>
+
+    <!-- ======================= NEIGHBOUR (BSM) ======================= -->
+    <linearGradient id="bodyAdj" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1c2025"/>
+      <stop offset="0.5" stop-color="#5a626b"/>
+      <stop offset="1" stop-color="#1c2025"/>
+    </linearGradient>
+    <linearGradient id="adjLong" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6a727c" stop-opacity="0.35"/>
+      <stop offset="0.5" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#05070a" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="adjGlass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161a1f"/>
+      <stop offset="1" stop-color="#0a0d10"/>
+    </linearGradient>
+
+    <!-- red proximity bloom -->
+    <radialGradient id="redGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff5a4a" stop-opacity="0.95"/>
+      <stop offset="0.4" stop-color="#ff453a" stop-opacity="0.7"/>
+      <stop offset="0.72" stop-color="#e2231a" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#e2231a" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- ======================= FILTERS ======================= -->
+    <filter id="aoSoft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="20"/>
+    </filter>
+    <filter id="aoTight" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+    <filter id="glowSoft" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="11"/>
+    </filter>
+    <filter id="glowArc" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="4.5"/>
+    </filter>
+    <filter id="edgeSoft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="1.2"/>
+    </filter>
+  </defs>
+
+  <!-- ===================== CANVAS ===================== -->
+  <rect width="1280" height="800" fill="url(#bgRamp)"/>
+  <ellipse cx="540" cy="408" rx="560" ry="360" fill="url(#stage)"/>
+  <rect width="1280" height="800" fill="url(#vignette)"/>
+
+  <!-- ===================== TOP STATUS HINT ===================== -->
+  <g font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+    <circle cx="44" cy="46" r="3.5" fill="#3e6ae1"/>
+    <text x="58" y="51" font-size="15" font-weight="300" letter-spacing="3.4"
+          fill="#8b929b">P &#183; 14:32 &#183; VEHICLE STATUS</text>
+  </g>
+
+  <!-- ===================== HERO CAR (top-down, dead centre) ===================== -->
+  <!-- car spans x ~ 430..650, y ~ 120..700 ; centreline x=540 -->
+
+  <!-- ambient-occlusion contact shadow -->
+  <ellipse cx="540" cy="418" rx="150" ry="320" fill="#000000" opacity="0.62" filter="url(#aoSoft)"/>
+  <ellipse cx="540" cy="418" rx="116" ry="300" fill="#000000" opacity="0.5" filter="url(#aoTight)"/>
+
+  <g>
+    <!-- tyres (under body, peeking at the corners) -->
+    <g fill="url(#wheel)">
+      <rect x="424" y="232" width="22" height="64" rx="9"/>
+      <rect x="424" y="540" width="22" height="64" rx="9"/>
+      <rect x="634" y="232" width="22" height="64" rx="9"/>
+      <rect x="634" y="540" width="22" height="64" rx="9"/>
+    </g>
+
+    <!-- ===== BODY SILHOUETTE (long roadster: rounded nose & tail) ===== -->
+    <path d="M 540 120
+             C 588 120 612 150 620 196
+             C 630 252 632 320 632 408
+             C 632 496 630 568 620 624
+             C 612 672 590 700 540 700
+             C 490 700 468 672 460 624
+             C 450 568 448 496 448 408
+             C 448 320 450 252 460 196
+             C 468 150 492 120 540 120 Z"
+          fill="url(#bodyCross)"/>
+    <!-- nose-to-tail sheen + far-edge darkening -->
+    <path d="M 540 120
+             C 588 120 612 150 620 196
+             C 630 252 632 320 632 408
+             C 632 496 630 568 620 624
+             C 612 672 590 700 540 700
+             C 490 700 468 672 460 624
+             C 450 568 448 496 448 408
+             C 448 320 450 252 460 196
+             C 468 150 492 120 540 120 Z"
+          fill="url(#bodyLong)"/>
+
+    <!-- crisp centre character line / spine specular -->
+    <rect x="500" y="150" width="80" height="510" fill="url(#spine)" opacity="0.5"/>
+    <line x1="540" y1="156" x2="540" y2="282" stroke="#eef1f4" stroke-width="1" opacity="0.4"/>
+    <line x1="540" y1="540" x2="540" y2="650" stroke="#eef1f4" stroke-width="1" opacity="0.35"/>
+
+    <!-- hood vents / cowl seam (front) -->
+    <path d="M 478 286 C 510 274 570 274 602 286" fill="none"
+          stroke="#11151a" stroke-width="1.6" opacity="0.85"/>
+
+    <!-- ===== GREENHOUSE: dark open cockpit (roadster, top down) ===== -->
+    <path d="M 489 300
+             C 489 296 494 292 506 292
+             L 574 292 C 586 292 591 296 591 300
+             L 591 392 C 591 404 584 410 572 410
+             L 508 410 C 496 410 489 404 489 392 Z"
+          fill="url(#glass)" stroke="#05070a" stroke-width="2"/>
+    <!-- windscreen header sheen -->
+    <path d="M 495 300 C 520 295 560 295 585 300 L 583 312 C 558 308 522 308 497 312 Z"
+          fill="url(#glassSheen)" opacity="0.7"/>
+    <!-- twin roll-hoop dots behind seats -->
+    <circle cx="512" cy="398" r="6" fill="#1b2026" stroke="#2c343d" stroke-width="1"/>
+    <circle cx="568" cy="398" r="6" fill="#1b2026" stroke="#2c343d" stroke-width="1"/>
+
+    <!-- side mirrors -->
+    <path d="M 452 318 q -13 2 -16 11 q 13 4 18 -1 Z" fill="url(#doorMetal)"/>
+    <path d="M 628 318 q 13 2 16 11 q -13 4 -18 -1 Z" fill="url(#doorMetal)"/>
+
+    <!-- ===== PASSENGER (right) door — CLOSED, proves 2 doors: thin seams only ===== -->
+    <path d="M 616 318 C 622 360 622 446 616 488" fill="none"
+          stroke="#11151a" stroke-width="1.6" opacity="0.9"/>
+    <path d="M 596 312 L 596 320 M 596 486 L 596 494" stroke="#11151a"
+          stroke-width="1.6" opacity="0.7"/>
+    <line x1="612" y1="404" x2="624" y2="404" stroke="#11151a" stroke-width="1.4" opacity="0.7"/>
+
+    <!-- ===== REAR TRUNK — CLOSED but built for the same lift treatment ===== -->
+    <path d="M 470 556 C 504 548 576 548 610 556" fill="none"
+          stroke="#11151a" stroke-width="1.8" opacity="0.9"/>
+    <line x1="540" y1="556" x2="540" y2="636" stroke="#11151a" stroke-width="1.4" opacity="0.55"/>
+    <path d="M 470 556 C 504 548 576 548 610 556" fill="none"
+          stroke="#d6dce2" stroke-width="0.8" opacity="0.18" transform="translate(0,-1.4)"/>
+    <!-- tail-lamp hints -->
+    <path d="M 474 648 q 18 -7 34 -2 l 0 12 q -16 -4 -34 2 Z" fill="#3a2226" opacity="0.7"/>
+    <path d="M 606 648 q -18 -7 -34 -2 l 0 12 q 16 -4 34 2 Z" fill="#3a2226" opacity="0.7"/>
+
+    <!-- ===== DRIVER (left) door — OPEN ===== -->
+    <!-- 1. dark aperture revealed on the body where the panel pulled away -->
+    <path d="M 449 320
+             C 446 360 446 446 449 486
+             L 470 486 C 467 446 467 360 470 320 Z"
+          fill="url(#sill)"/>
+    <line x1="468" y1="330" x2="468" y2="476" stroke="#0a0d11" stroke-width="1"/>
+    <!-- subtle red inner accent deep in the aperture (state cue, not a flap) -->
+    <path d="M 451 360 C 450 400 450 420 451 452" fill="none"
+          stroke="#ff453a" stroke-width="1.6" opacity="0.5" filter="url(#edgeSoft)"/>
+
+    <!-- 2. soft contact shadow pooled under the swung door -->
+    <ellipse cx="392" cy="416" rx="58" ry="92" fill="#000000" opacity="0.5" filter="url(#aoTight)"/>
+
+    <!-- 3. the swung door panel, hinged at the front (top) pivot, jutting out-left -->
+    <g>
+      <path d="M 451 320
+               C 426 321 401 327 384 340
+               C 373 349 369 362 371 380
+               C 374 410 376 442 378 466
+               C 379 482 388 489 404 488
+               C 426 486 444 483 451 480
+               C 448 444 448 358 451 320 Z"
+            fill="url(#doorMetal)"/>
+      <!-- door inner shading toward hinge (catches less light) -->
+      <path d="M 451 320 C 444 358 444 444 451 480 L 438 478 C 432 444 432 358 438 324 Z"
+            fill="#2c323a" opacity="0.4"/>
+      <!-- soft edge glow so it reads as a raised panel -->
+      <path d="M 384 340 C 373 349 369 362 371 380 C 374 410 376 442 378 466"
+            fill="none" stroke="#d6dce2" stroke-width="5" opacity="0.2" filter="url(#glowSoft)"/>
+      <!-- crisp bright leading-edge specular along the outer rim -->
+      <path d="M 384 340 C 373 349 369 362 371 380 C 374 410 376 442 378 466"
+            fill="none" stroke="#eef1f4" stroke-width="1.8" opacity="0.95"/>
+      <path d="M 451 320 C 426 321 401 327 384 340"
+            fill="none" stroke="#d6dce2" stroke-width="1.4" opacity="0.65"/>
+      <!-- mirror that travels with the open door -->
+      <path d="M 386 348 q -12 -3 -19 3 q 9 9 18 6 Z" fill="url(#doorMetal)"/>
+    </g>
+  </g>
+
+  <!-- driver-door caption: quiet, near the part, sentence case -->
+  <g font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+    <circle cx="206" cy="520" r="4" fill="#eef1f4"/>
+    <text x="220" y="526" font-size="26" font-weight="300" letter-spacing="0.5"
+          fill="#eef1f4">Driver door open</text>
+    <text x="220" y="554" font-size="16" font-weight="300" letter-spacing="0.4"
+          fill="#8b929b">Front left &#183; ajar</text>
+    <line x1="300" y1="476" x2="372" y2="432" stroke="#3a424b" stroke-width="1" opacity="0.55"/>
+  </g>
+
+  <!-- ===================== BLIND-SPOT NEIGHBOUR (right) ===================== -->
+  <!-- smaller (~70%), dimmer, same lane centre (y~408) as the hero -->
+  <g>
+    <!-- red proximity bloom behind its near (left) edge -->
+    <ellipse cx="836" cy="408" rx="64" ry="158" fill="url(#redGlow)" filter="url(#glowSoft)"/>
+
+    <!-- AO contact shadow (dimmer than hero) -->
+    <ellipse cx="878" cy="414" rx="90" ry="222" fill="#000000" opacity="0.45" filter="url(#aoSoft)"/>
+
+    <!-- neighbour body -->
+    <path d="M 878 216
+             C 910 216 926 240 932 276
+             C 939 320 941 372 941 408
+             C 941 466 939 520 932 558
+             C 926 594 910 616 878 616
+             C 846 616 830 594 824 558
+             C 817 520 815 466 815 408
+             C 815 372 817 320 824 276
+             C 830 240 846 216 878 216 Z"
+          fill="url(#bodyAdj)"/>
+    <path d="M 878 216
+             C 910 216 926 240 932 276
+             C 939 320 941 372 941 408
+             C 941 466 939 520 932 558
+             C 926 594 910 616 878 616
+             C 846 616 830 594 824 558
+             C 817 520 815 466 815 408
+             C 815 372 817 320 824 276
+             C 830 240 846 216 878 216 Z"
+          fill="url(#adjLong)"/>
+    <!-- simplified dark greenhouse -->
+    <rect x="842" y="338" width="72" height="124" rx="14" fill="url(#adjGlass)"
+          stroke="#05070a" stroke-width="1.5"/>
+    <line x1="878" y1="266" x2="878" y2="334" stroke="#11151a" stroke-width="1" opacity="0.5"/>
+    <line x1="878" y1="466" x2="878" y2="548" stroke="#11151a" stroke-width="1" opacity="0.5"/>
+
+    <!-- red crescent arc hugging its near (left) contour -->
+    <path d="M 822 300 C 802 356 802 472 822 528" fill="none"
+          stroke="#e2231a" stroke-width="7" stroke-linecap="round"
+          opacity="0.7" filter="url(#glowArc)"/>
+    <path d="M 823 306 C 804 358 804 470 823 522" fill="none"
+          stroke="#ff453a" stroke-width="4" stroke-linecap="round"
+          opacity="0.9" filter="url(#glowArc)"/>
+    <path d="M 824 312 C 806 360 806 468 824 516" fill="none"
+          stroke="#ff6a4d" stroke-width="2.2" stroke-linecap="round" opacity="0.95"/>
+
+    <!-- short red lane bar between the cars (do-not-move-over) -->
+    <rect x="706" y="338" width="5" height="140" rx="2.5" fill="#ff453a" opacity="0.6"/>
+    <rect x="706" y="338" width="5" height="140" rx="2.5" fill="#ff453a" opacity="0.45" filter="url(#glowArc)"/>
+  </g>
+
+  <!-- blind-spot caption -->
+  <g font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+    <circle cx="1006" cy="392" r="4.5" fill="#ff453a"/>
+    <text x="1020" y="398" font-size="22" font-weight="300" letter-spacing="0.5"
+          fill="#ff453a">Vehicle in blind spot</text>
+    <text x="1020" y="424" font-size="16" font-weight="300" letter-spacing="0.4"
+          fill="#8b929b">Right side &#183; closing</text>
+    <line x1="950" y1="408" x2="996" y2="396" stroke="#5a2a26" stroke-width="1" opacity="0.6"/>
+  </g>
+
+  <!-- ===================== BOTTOM UTILITY ROW ===================== -->
+  <line x1="0" y1="742" x2="1280" y2="742" stroke="#1c2228" stroke-width="1"/>
+  <g font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif"
+     font-weight="300" letter-spacing="0.5">
+    <text x="40" y="775" font-size="15" fill="#8b929b">Mazda MX-5 &#183; 2 doors, trunk monitored</text>
+    <text x="1240" y="775" font-size="15" fill="#8b929b" text-anchor="end">Tap to dismiss</text>
+  </g>
+</svg>

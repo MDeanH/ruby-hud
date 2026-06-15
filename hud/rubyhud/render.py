@@ -20,7 +20,7 @@ import time
 import numpy as np
 from PIL import Image, ImageDraw
 
-from . import gauges
+from . import body_overlay, gauges
 from .theme import (ACCENT, ACCENT_GLOW, BG, BG_TOP, CARD_BORDER, DANGER, OK,
                     PANEL, TEXT, TEXT_DIM, TICK, WARN, font, mix)
 
@@ -331,6 +331,10 @@ def compose_frame(snap, w: int = W, h: int = H, ui: dict | None = None
 
     if idx is not None:
         pages[idx].render(draw, img, snap, ui.get("ctx", {}))
+
+    # Body / safety overlay (door + trunk ajar, blind-spot) floats over any
+    # page; it is a no-op when everything is shut and no blind spot is active.
+    body_overlay.draw_overlay(img, draw, snap)
 
     _draw_tap_fx(img, ui.get("tap_fx"))
 
