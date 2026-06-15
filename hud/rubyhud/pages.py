@@ -1405,12 +1405,72 @@ class AIVisionPage(Page):
 
 
 # --------------------------------------------------------------------------- #
+# Page: BODY — top-down line-art MX-5 with door / trunk / blind-spot status
+# --------------------------------------------------------------------------- #
+class BodyView(Page):
+    """Calm top-down body view in the Tesla language: a hairline MX-5 with open
+    panels (driver/passenger door, trunk) lit in red and a blind-spot arc on
+    any active side. Roof state shown as a small badge. No takeover, no spin."""
+
+    name = "BODY"
+
+    def render_static(self, draw, img):
+        gauges.tracked_text(draw, 40 * SS, 84 * SS, "BODY",
+                            font(26 * SS, "bold"), TEXT, tracking=8 * SS)
+        gauges.tracked_text(draw, 40 * SS, 116 * SS, "ND1 MX-5 RF",
+                            font(14 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
+
+    def render(self, draw, img, snap, ctx):
+        from . import bodycar
+        bodycar.draw_car(img, draw, snap, SS, cx=img.width // 2,
+                         cy=int(402 * SS), car_len=536)
+        self._roof_badge(draw, snap)
+        self._caption(draw, snap)
+
+    @staticmethod
+    def _roof_badge(draw, snap):
+        roof = snap.roof or "-"
+        col = OK if roof == "CLOSED" else (TEXT_DIM if roof == "-" else WARN)
+        gauges.tracked_text(draw, 1240 * SS, 90 * SS, "ROOF",
+                            font(13 * SS, "regular"), TEXT_DIM, tracking=4 * SS,
+                            anchor="ra")
+        gauges.tracked_text(draw, 1240 * SS, 116 * SS,
+                            ("--" if roof == "-" else roof),
+                            font(20 * SS, "regular"), col, tracking=2 * SS,
+                            anchor="ra")
+
+    @staticmethod
+    def _caption(draw, snap):
+        opens = []
+        if snap.door_left:
+            opens.append("Driver door")
+        if snap.door_right:
+            opens.append("Passenger door")
+        if snap.trunk:
+            opens.append("Trunk")
+        if opens:
+            msg, col = "  ·  ".join(opens) + " open", DANGER
+        else:
+            msg, col = "ALL CLOSED", mix(theme.BG, TEXT_DIM, 0.3)
+        gauges.tracked_text_center(draw, SW // 2, 690 * SS, msg,
+                                   font(23 * SS, "regular"), col, tracking=3 * SS)
+        if snap.bsm_left or snap.bsm_right:
+            side = "Both sides" if (snap.bsm_left and snap.bsm_right) else (
+                "Left" if snap.bsm_left else "Right")
+            gauges.tracked_text_center(draw, SW // 2, 718 * SS,
+                                       "VEHICLE IN BLIND SPOT · " + side.upper(),
+                                       font(14 * SS, "bold"), DANGER,
+                                       tracking=2 * SS)
+
+
+# --------------------------------------------------------------------------- #
 # factories
 # --------------------------------------------------------------------------- #
 def make_pages() -> list:
     from .settings import SettingsPage  # function-level: no import cycle
-    # Visible swipe rotation: GAUGES, VEHICLE, SYSTEM, CONFIGURE[, AI VISION].
-    pages = [GaugesPage(), VehiclePage(), SystemPage(), SettingsPage()]
+    # Visible swipe rotation: GAUGES, VEHICLE, BODY, SYSTEM, CONFIGURE[, AI].
+    pages = [GaugesPage(), VehiclePage(), BodyView(), SystemPage(),
+             SettingsPage()]
     # Vision page appended to the visible rotation if it constructs.
     try:
         vision = AIVisionPage()
