@@ -398,9 +398,14 @@ class DataLayer:
         # NOT decoded — ambient is cluster-only, like oil temp / battery volts.
         elif arb == MX5_ID_TEMP and len(data) >= 1:
             self._coolant_c = float(data[0]) - 40.0
-        # ---- 0x9E HS_IC: fuel tank (b5 *0.2 L -> % of 45 L ND tank) ----
+        # ---- 0x9E HS_IC: fuel tank (b5 *0.25 L -> % of 45 L ND tank) ----
+        # Scale calibrated on the car 2026-06-15: with a FULL tank, byte5=0xB5=181;
+        # 181*0.25 = 45.25 L ~= the 45 L ND tank, so full reads 100%. The community
+        # DBC's 0.2 L/bit under-read (a full tank showed 80%). Single-point (full)
+        # calibration; sender assumed linear through 0 -- refine with a low-fuel
+        # reading later (note byte5 when the factory low-fuel light triggers).
         elif arb == MX5_ID_FUEL and len(data) >= 6:
-            liters = float(data[5]) * 0.2
+            liters = float(data[5]) * 0.25
             self._fuel_pct = max(0.0, min(100.0, liters / 45.0 * 100.0))
         # ---- 0xFD HS_PCM: MT gear (@bit19 len3) + MAP (b6, +2 kPa offset) ----
         elif arb == MX5_ID_PCM2 and len(data) >= 7:
