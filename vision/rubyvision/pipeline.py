@@ -248,7 +248,9 @@ class Pipeline:
         live camera (csi/usb)."""
         if state == "no_camera":
             return "DEMO - NO CAMERA"
-        is_live_cam = kind.startswith("csi") or kind.startswith("usb")
+        # ir = RealSense IR, a real camera (mono). Treat it as live alongside
+        # csi/usb so its feed isn't mislabelled DEMO.
+        is_live_cam = kind.startswith(("csi", "usb", "ir"))
         if self.mode != "hailo":
             return "DEMO - CPU STUB"
         if not is_live_cam:

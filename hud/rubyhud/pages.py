@@ -1121,19 +1121,17 @@ class AIVisionPage(Page):
     # 800x450; we paste it at (PREV_X, PREV_Y) scaled by SS with NEAREST
     # (the canvas is 2x; a clean integer scale keeps boxes/labels crisp).
     PREV_W, PREV_H = 800, 450
-    PREV_X, PREV_Y = 40, 120
+    PREV_X, PREV_Y = 240, 120        # centred (detections list removed)
     BEZEL_PAD = 8                    # bezel rect inset around the preview
 
-    # Right info column (chips + detection list) beside the preview.
-    SIDE_X0 = 880
-    SIDE_X1 = 1248
+    SIDE_X1 = 1248                   # right margin (chip-strip extent)
 
     # On-page power button (top-right): toggles the rubyvision service on/off.
     PWR_X0, PWR_Y0, PWR_X1, PWR_Y1 = 1058, 70, 1248, 110
 
     # Bottom chip strip (model / source / fps / temp / state).
     CHIP_Y = 590
-    CHIP_X = 40
+    CHIP_X = 240
     # Right edge of the rendered chip strip (screen px), updated each frame by
     # _chip_strip; the cycle_model tap zone is bounded to this so it matches the
     # visible chips rather than spanning empty space out to SIDE_X1. Seeded to a
@@ -1158,20 +1156,9 @@ class AIVisionPage(Page):
         draw.line([(bx0 + 12 * SS, by0 + SS), (bx1 - 12 * SS, by0 + SS)],
                   fill=CARD_EDGE, width=SS)
 
-        # Right info card (detection list lives here per frame).
-        gauges.card(draw, self.SIDE_X0 * SS, self.PREV_Y * SS,
-                    self.SIDE_X1 * SS, (self.PREV_Y + self.PREV_H) * SS,
-                    radius=14 * SS, scale=SS)
-        gauges.tracked_text(draw, (self.SIDE_X0 + 20) * SS,
-                            (self.PREV_Y + 14) * SS, "DETECTIONS",
-                            font(17 * SS, "bold"), TEXT_DIM, tracking=3 * SS)
-        draw.line([((self.SIDE_X0 + 12) * SS, (self.PREV_Y + 46) * SS),
-                   ((self.SIDE_X1 - 12) * SS, (self.PREV_Y + 46) * SS)],
-                  fill=CARD_BORDER, width=SS)
-
-        # Chip-strip separator above the bottom info chips.
+        # Chip-strip separator above the bottom info chips (spans the preview).
         draw.line([(self.CHIP_X * SS, (self.CHIP_Y - 14) * SS),
-                   (self.SIDE_X1 * SS, (self.CHIP_Y - 14) * SS)],
+                   ((self.PREV_X + self.PREV_W) * SS, (self.CHIP_Y - 14) * SS)],
                   fill=CARD_BORDER, width=SS)
 
     # ---- dynamic ---------------------------------------------------------
@@ -1193,11 +1180,13 @@ class AIVisionPage(Page):
         state = str(st.get("state") or "")
         mode = str(st.get("mode") or "")
         source = str(st.get("source") or "")
-        dets = st.get("detections") or []
 
         # Paste the latest annotated frame into the bezel (NEAREST keeps the
         # service-drawn boxes/labels crisp at the 2x canvas scale).
         self._paste_preview(img, vc, st)
+
+        # Current speed stamped over the video (glassy pill, bottom-left).
+        self._draw_speed_overlay(draw, img, snap)
 
         # Degraded-mode badge inside the preview (top-left). The service also
         # burns a DEMO badge into the JPEG; this is the HUD-side, palette-
@@ -1207,7 +1196,6 @@ class AIVisionPage(Page):
             self._draw_badge(draw, badge[0], badge[1])
 
         self._chip_strip(draw, st, state, mode, source)
-        self._detection_list(draw, dets)
 
     def _draw_power(self, draw):
         """Top-right on/off button for the rubyvision service (live + offline)."""
@@ -1243,6 +1231,38 @@ class AIVisionPage(Page):
             img.paste(scaled, (x, y))
         except Exception:
             pass
+
+    # -- speed overlay -----------------------------------------------------
+    def _draw_speed_overlay(self, draw, img, snap):
+        """Stamp current speed over the video (glassy pill, bottom-left)."""
+        v = _num(snap.speed_mph)
+        spd = "--" if v is None else "%d" % int(round(_disp_speed(float(v))))
+        unit = config.speed_label()
+        nf = font(58 * SS, "thin")
+        uf = font(19 * SS, "bold")
+        try:
+            nw = int(draw.textlength(spd, font=nf))
+            uw = int(draw.textlength(unit, font=uf))
+        except Exception:
+            nw, uw = len(spd) * 34 * SS, len(unit) * 13 * SS
+        padx, gap, h = 20 * SS, 9 * SS, 70 * SS
+        w = padx * 2 + nw + gap + uw
+        x0 = (self.PREV_X + 16) * SS
+        y1 = (self.PREV_Y + self.PREV_H - 16) * SS
+        y0 = y1 - h
+        try:                       # translucent glass pill (legible over video)
+            from PIL import Image, ImageDraw as _ID
+            pill = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+            _ID(pill).rounded_rectangle([0, 0, int(w), int(h)], radius=14 * SS,
+                                        fill=(8, 11, 15, 165))
+            img.paste(pill, (int(x0), int(y0)), pill)
+        except Exception:
+            pass
+        cy = (y0 + y1) // 2
+        draw.text((x0 + padx, cy), spd, font=nf, fill=(238, 241, 244),
+                  anchor="lm")
+        draw.text((x0 + padx + nw + gap, cy + 11 * SS), unit, font=uf,
+                  fill=(150, 158, 168), anchor="lm")
 
     # -- badge -------------------------------------------------------------
     @staticmethod
@@ -1300,51 +1320,6 @@ class AIVisionPage(Page):
         self._chip_x_end = int(x / SS)
 
     # -- detection list ----------------------------------------------------
-    def _detection_list(self, draw, dets):
-        x0 = (self.SIDE_X0 + 20) * SS
-        x1 = (self.SIDE_X1 - 20) * SS
-        y = (self.PREV_Y + 60) * SS
-        rfont = font(20 * SS, "mono")
-
-        try:
-            top = sorted(dets, key=lambda d: float(d.get("conf", 0.0)),
-                         reverse=True)
-        except Exception:
-            top = list(dets)
-
-        # Count chip at the bottom of the card.
-        cy = (self.PREV_Y + self.PREV_H - 40) * SS
-        gauges.status_chip(draw, x0, cy, "%d OBJECTS" % len(top),
-                           ACCENT if top else TEXT_DIM,
-                           filled=bool(top), scale=SS)
-
-        if not top:
-            gauges._centered_text(draw, (x0 + x1) // 2,
-                                  (self.PREV_Y + 240) * SS, "NONE",
-                                  font(26 * SS, "bold"), TEXT_DIM)
-            return
-
-        row_h = 40 * SS
-        max_rows = 8
-        for d in top[:max_rows]:
-            try:
-                cls = str(d.get("cls") or "?")[:14]
-                conf = float(d.get("conf", 0.0))
-            except Exception:
-                continue
-            draw.text((x0, y), cls, font=rfont, fill=TEXT)
-            pct = "%d%%" % int(round(max(0.0, min(1.0, conf)) * 100))
-            try:
-                pw = draw.textlength(pct, font=rfont)
-            except Exception:
-                pw = gauges._text_size(draw, pct, rfont)[0]
-            draw.text((x1 - pw, y), pct, font=rfont, fill=ACCENT_GLOW)
-            y += row_h
-        extra = len(top) - max_rows
-        if extra > 0:
-            draw.text((x0, y), "+%d more" % extra, font=font(18 * SS, "bold"),
-                      fill=TEXT_DIM)
-
     # -- offline card ------------------------------------------------------
     def _render_offline(self, draw, img, st):
         """Full-preview OFFLINE card: dim plate + DANGER title + hint. Used
@@ -1372,10 +1347,6 @@ class AIVisionPage(Page):
                               "systemctl status rubyvision",
                               font(20 * SS, "mono"), mix(BG, TEXT_DIM, 0.75))
 
-        # Dim the side card contents to match (no live detections).
-        gauges.status_chip(draw, (self.SIDE_X0 + 20) * SS,
-                           (self.PREV_Y + 60) * SS, "NO DATA", TEXT_DIM,
-                           scale=SS)
         # Offline chip strip.
         gauges.status_chip(draw, self.CHIP_X * SS, self.CHIP_Y * SS,
                            "OFFLINE", DANGER, filled=True, scale=SS)
