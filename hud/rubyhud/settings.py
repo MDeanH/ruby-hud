@@ -131,8 +131,8 @@ class SettingsPage(TouchMenu):
             # (NAVIGATION dropped — CarPlay provides nav off the phone.)
             MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),
-            MenuItem("BLUETOOTH", value_fn=lambda: "planned",
-                     enabled_fn=lambda: False),
+            MenuItem("BLUETOOTH", value_fn=self._bt_value,
+                     submenu=self._bt_items),
             MenuItem("CARPLAY", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),
             MenuItem("VERSION / ABOUT", submenu=self._about_items),
@@ -227,6 +227,55 @@ class SettingsPage(TouchMenu):
             # Deep-link to the full-screen WI-FI page (scan / connect / manage).
             MenuItem("MANAGE / CONNECT",
                      on_tap=lambda ctx: ctx.__setitem__("nav_request", "WIFI")),
+        ]
+
+    @staticmethod
+    def _bt_value() -> str:
+        # Compact status for the CONFIGURE row. btnet caches devices(), so this
+        # only reads in-memory state -- safe to call every frame.
+        from . import btnet
+        try:
+            if not btnet.status().get("powered", True):
+                return "off"
+            conn = [d for d in btnet.devices() if d.get("connected")]
+            if conn:
+                return (conn[0].get("name") or "connected")[:16]
+            return "on"
+        except Exception:
+            return "--"
+
+    @staticmethod
+    def _bt_items() -> list:
+        from . import btnet
+
+        def connected():
+            try:
+                c = [d.get("name") or "--" for d in btnet.devices()
+                     if d.get("connected")]
+                return ", ".join(c)[:24] if c else "none"
+            except Exception:
+                return "--"
+
+        def paired():
+            try:
+                return str(sum(1 for d in btnet.devices() if d.get("paired")))
+            except Exception:
+                return "--"
+
+        def power():
+            try:
+                return "on" if btnet.status().get("powered", True) else "off"
+            except Exception:
+                return "--"
+
+        return [
+            MenuItem("POWER", value_fn=power),
+            MenuItem("CONNECTED", value_fn=connected),
+            MenuItem("PAIRED DEVICES", value_fn=paired),
+            # Deep-link to the full-screen BLUETOOTH page (scan / pair / manage).
+            MenuItem("MANAGE / PAIR",
+                     on_tap=lambda ctx: ctx.__setitem__("nav_request",
+                                                        "BLUETOOTH")),
         ]
 
     # -- satellite (4" dash HUD) control ------------------------------------- #
