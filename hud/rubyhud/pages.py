@@ -95,7 +95,9 @@ class GaugesPage(Page):
     # rpm arc (screen px, pre-supersample). 0 rpm at ARC_A0; full range sweeps
     # ARC_SWEEP deg clockwise (0deg = 3 o'clock, PIL convention).
     ARC_CX, ARC_CY, ARC_R = 415, 410, 285
-    ARC_A0, ARC_SWEEP = 308.0, 284.0
+    # Standard tach orientation: opening at the BOTTOM. 0 rpm at lower-left
+    # (135deg), sweeping clockwise 270deg up and over to lower-right (redline).
+    ARC_A0, ARC_SWEEP = 135.0, 270.0
     REDLINE = 7000.0                      # of RPM_MAX (8000)
 
     # hero numerals (drawn anchor middle/baseline).

@@ -211,18 +211,15 @@ def _page_static(pages, idx, w: int, h: int) -> Image.Image:
 # --------------------------------------------------------------------------- #
 def _draw_top_bar(draw, snap):
     """Dynamic top bar: source badge, clock / cpu / tailscale chips."""
-    # Source badge (center).
+    # Source badge (center) — only when NOT live: a clean Tesla top shows no
+    # "LIVE" chip; SIM / NO DATA still surface as a warning.
     src = snap.source or "NO DATA"
-    if src == "SIM":
-        col = WARN
-    elif src == "LIVE":
-        col = OK
-    else:
-        col = TEXT_DIM
-    sfont = font(25 * SS, "bold")
-    sw = gauges._text_size(draw, src, sfont)[0] + 40 * SS
-    gauges.status_chip(draw, SW // 2 - sw // 2, 16 * SS, src, col,
-                       filled=(src != "NO DATA"), scale=SS)
+    if src != "LIVE":
+        col = WARN if src == "SIM" else TEXT_DIM
+        sfont = font(25 * SS, "bold")
+        sw = gauges._text_size(draw, src, sfont)[0] + 40 * SS
+        gauges.status_chip(draw, SW // 2 - sw // 2, 16 * SS, src, col,
+                           filled=(src != "NO DATA"), scale=SS)
 
     # Right cluster: clock, cpu temp, tailscale chip.
     x = SW - 40 * SS
