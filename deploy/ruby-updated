@@ -204,6 +204,29 @@ sync_file() {  # <src> <dst> <mode>: 0 if installed/changed, 1 otherwise
         && chmod "$mode" "$dst.new" && mv -f "$dst.new" "$dst"
 }
 
+sync_repo_main() {  # <release-dir>: align the hud-repo working tree with the
+    # deployed release commit. rubyvision + rubysat are EDITABLE installs that
+    # import from the stable hud-repo clone (NOT the release symlink -- this is
+    # deliberate, see setup-vision.sh: pinning to a prunable release worktree
+    # would silently run stale code). So the apply must advance hud-repo's tree,
+    # or those services keep running whatever the repo was last left at. Never
+    # fails the apply (vision/sat are non-critical to the HUD itself).
+    local d=$1 commit cur
+    commit=$(git_at "$d" rev-parse HEAD 2>/dev/null) || return 0
+    [ -n "$commit" ] || return 0
+    cur=$(git_m rev-parse HEAD 2>/dev/null)
+    [ "$cur" = "$commit" ] && return 0
+    set_status finalizing "aligning hud-repo to deployed code (editable installs)" true
+    # Normal upgrade fast-forwards; rollback / divergence falls back to a hard
+    # reset onto the already-integrity-verified release commit (origin-published
+    # via verify_release/stage_release), so this only ever lands on trusted code.
+    git_m checkout -f main >/dev/null 2>&1
+    if ! git_m merge --ff-only "$commit" >/dev/null 2>&1; then
+        git_m reset --hard "$commit" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 self_install() {  # <release-dir>: refresh handler + unit files from release
     local d=$1/deploy changed=0 path_changed=0
     if sync_file "$d/ruby-updated" "$SBIN_SELF" 0755; then
@@ -234,14 +257,12 @@ self_install() {  # <release-dir>: refresh handler + unit files from release
             systemctl restart ruby-updated.path >/dev/null 2>&1 || true
         fi
     fi
-    # rubyvision runs the new release's code via the /home/michael/hud symlink;
-    # restart it (only if already running) so the freshly-deployed code/unit
-    # takes effect. It is independent of the watched rubyhud restart and must
-    # never block or fail the apply.
+    # rubyvision + rubysat import from the hud-repo clone (editable installs),
+    # NOT the release symlink -- so advance the repo tree to the deployed commit
+    # FIRST, then restart them (only if already running) to pick up the new code.
+    # Non-blocking, never-fail: vision/sat must not be able to fail an apply.
+    sync_repo_main "$1"
     systemctl try-restart rubyvision >/dev/null 2>&1 || true
-    # rubysat imports the new release via the venv editable/.pth that setup-sat.sh
-    # just re-pinned; restart it (only if already running) so it picks up the new
-    # release's rubysat/rubyhud code. Same non-blocking, never-fail contract.
     systemctl try-restart rubysat >/dev/null 2>&1 || true
     return 0
 }
