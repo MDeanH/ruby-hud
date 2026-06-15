@@ -45,7 +45,7 @@ class Snapshot:
     # ---- extra ND1 RF live signals (None/'-'/False when stale/unavailable) --
     ambient_c: float | None = None     # outside-air temp (0x420 b6-7)
     map_kpa: float | None = None       # manifold abs pressure (0xFD b7)
-    roof: str = "-"                    # 'CLOSED'|'OPEN'|'roof N' (RF hardtop)
+    roof: str = "-"                    # 'CLOSED'|'OPENING'|'OPEN'|'CLOSING' (RF, 0x472)
     turn: str = "off"                 # 'off'|'L'|'R'|'LR'
     headlight: str = "off"            # 'off'|'TNS'|'TNS_LO'|'HI'
     parking_brake: bool = False
@@ -77,9 +77,10 @@ MX5_ID_ROOF = 0x472  # RoofGraphicStatus @bit23 len4 (RF retractable hardtop)
 # Motorola/big-endian @0+ value tables from the DBC.
 _TURN_MAP = {0: "off", 1: "L", 2: "R", 3: "LR"}
 _HEADLIGHT_MAP = {0: "off", 2: "TNS", 3: "TNS_LO", 12: "HI"}
-# RoofGraphicStatus has no VAL_ table in the DBC; codes inferred on the car by
-# operating the RF top. Unknown codes fall through to "roof N" for calibration.
-_ROOF_MAP = {0: "CLOSED", 1: "OPEN"}
+# RF roof (0x472) calibrated on-car 2026-06-14 by operating the top while logging:
+# the DBC's RoofGraphicStatus 4-bit field is only the dash animation. Real state =
+# byte2 motion direction (0 idle / 2 opening / 4 closing, +0x8 = blink phase) and,
+# when idle, byte1 (0x05 closed / 0x03 open). Decoded inline in _decode_mx5.
 # MT_Gear_Actual (3-bit): 0=neutral, 1..6 gears. Reverse comes from 0x9F.
 _MT_GEAR_MAP = {0: "N", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6"}
 
@@ -426,11 +427,20 @@ class DataLayer:
             self._parking_brake = bool((data[0] >> 4) & 1)
             self._reverse = bool((data[0] >> 7) & 1)
             self._gear = "R" if self._reverse else self._gear
-        # ---- 0x472 HS_RHT: RF retractable hardtop status (@bit23 len4) -------
+        # ---- 0x472 HS_RHT: RF retractable hardtop status (calibrated on-car) -
+        # byte2 high-nibble = motion (0 idle, 2 opening, 4 closing; +0x8 blink);
+        # when idle, byte1 gives the resting state (0x05 closed, 0x03 open).
+        # Ambiguous idle frames keep the last known state.
         elif arb == MX5_ID_ROOF and len(data) >= 3:
-            r = _moto(data, 23, 4)
-            if r is not None:
-                self._roof = _ROOF_MAP.get(r, "roof %d" % r)
+            direction = (data[2] >> 4) & 0x7
+            if direction == 2:
+                self._roof = "OPENING"
+            elif direction == 4:
+                self._roof = "CLOSING"
+            elif data[1] == 0x05:
+                self._roof = "CLOSED"
+            elif data[1] == 0x03:
+                self._roof = "OPEN"
 
     def _record_raw(self, arb, data: bytes, now: float) -> None:
         """Track raw traffic for the CAN page. Caller holds _lock."""

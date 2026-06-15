@@ -2,6 +2,10 @@
 
 All notable changes. Releases are annotated tags `vX.Y.Z`. See `docs/UPDATING.md` for the OTA mechanics, rollback, and setup details. Root `VERSION` is the single source of truth (propagated to hud/, packages, firmware, and this file on cut).
 
+## v3.15.0 — 2026-06-15
+- RF roof status decode calibrated on-car (0x472): the VEHICLE roof chip now shows CLOSED / OPENING / OPEN / CLOSING correctly. byte2 high-nibble = motion direction (0 idle / 2 opening / 4 closing, +0x8 = blink phase); when idle, byte1 = resting state (0x05 closed / 0x03 open). Replaces the prior best-guess `{0:CLOSED,1:OPEN}` map. RX-only — no actuation (the ND RF roof is a hardwired switch, not CAN-commandable). The full Tesla-style BODY-page roof view ships with the door/trunk feature.
+- Note: CHANGELOG entries for v3.11.1–v3.14.0 were not backfilled by their releases; see the tag messages for those.
+
 ## v3.11.0 — 2026-06-15
 - WI-FI page (full-screen, deep-linked from CONFIGURE > WI-FI > MANAGE / CONNECT): scan + list nearby networks (signal bars, lock, SAVED/CONNECTED tags), connect with an on-screen WPA password keyboard, switch / disconnect / forget saved networks, one-tap iPhone hotspot. All nmcli work runs off the render thread via `wifinet`; credentials are owned by NetworkManager (never stored or logged by the HUD).
 - On-screen Pillow keyboard widget (`keyboard.py`): QWERTY + symbol layer, sticky shift, hand-drawn key glyphs; hit-tested in screen px.
