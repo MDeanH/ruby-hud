@@ -374,20 +374,40 @@ class VideoSource:
 # --------------------------------------------------------------------------- #
 # selection
 # --------------------------------------------------------------------------- #
-# Cycle order used by the HUD's cmd "cycle_source": csi -> usb -> video ->
-# pattern -> (wrap to csi). open_source(pref=...) accepts any of these names or
+# Cycle order used by the HUD's cmd "cycle_source": usb -> csi -> video ->
+# pattern -> (wrap to usb). open_source(pref=...) accepts any of these names or
 # "auto" (the same order, each guarded; pattern is the guaranteed fallback).
-SOURCE_CYCLE = ("csi", "usb", "video", "pattern")
+# Swapped 2026-06-15: the USB webcam is the PRIMARY vision source; the CSI
+# ov5647 is the fallback (was csi-first).
+SOURCE_CYCLE = ("usb", "csi", "video", "pattern")
 
 
 def _find_usb_index():
-    """Lowest /dev/video[0-9]* index, or None."""
-    nodes = sorted(glob.glob("/dev/video[0-9]*"))
-    for node in nodes:
+    """Index of the USB/UVC webcam's capture node, or None.
+
+    A naive 'lowest /dev/video*' picks video0 -- which on a Pi 5 is the CSI
+    (rp1-cfe) node, not a webcam. So qualify on the backing driver: only a node
+    served by uvcvideo (a real USB webcam) counts; CSI (rp1-cfe/unicam) and ISP
+    (pispbe) nodes are skipped. Lowest qualifying index = UVC's capture node
+    (its metadata node has the higher index)."""
+    def _idx(node):
         try:
             return int(node[len("/dev/video"):])
         except ValueError:
+            return 1 << 30
+
+    for node in sorted(glob.glob("/dev/video[0-9]*"), key=_idx):
+        i = _idx(node)
+        if i == 1 << 30:
             continue
+        sysdev = "/sys/class/video4linux/video%d/device" % i
+        try:
+            driver = os.path.basename(os.path.realpath(sysdev + "/driver"))
+            link = os.path.realpath(sysdev)
+        except Exception:
+            continue
+        if driver == "uvcvideo" or "/usb" in link:
+            return i
     return None
 
 
