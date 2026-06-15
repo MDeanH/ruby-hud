@@ -1447,6 +1447,11 @@ def make_pages() -> list:
         pages.append(WiFiPage())
     except Exception:
         pass
+    try:
+        from .bluetoothpage import BluetoothPage
+        pages.append(BluetoothPage())
+    except Exception:
+        pass
     return pages
 
 
