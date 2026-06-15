@@ -130,6 +130,15 @@ _FONT_FILES = {
 # applied best-effort after load.
 _HUD_FONT_DIR = "/usr/share/fonts/truetype/rubyhud/"
 _FONT_CANDIDATES = {
+    # Light/thin instance of the variable Saira — the hero numerals (speed,
+    # gear) use this for the Tesla hairline look. Falls back to DejaVu/macOS
+    # regular on the bench (heavier than the deployed Pi render).
+    "thin": (
+        (_HUD_FONT_DIR + "Saira.ttf", 0, "Light"),
+        (_FONT_FILES["regular"], 0, None),
+        ("/System/Library/Fonts/Supplemental/Arial.ttf", 0, None),
+        ("/System/Library/Fonts/Helvetica.ttc", 0, None),
+    ),
     "regular": (
         (_HUD_FONT_DIR + "Saira.ttf", 0, "Medium"),
         (_FONT_FILES["regular"], 0, None),

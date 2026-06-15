@@ -211,9 +211,8 @@ def _page_static(pages, idx, w: int, h: int) -> Image.Image:
 # --------------------------------------------------------------------------- #
 def _draw_top_bar(draw, snap):
     """Dynamic top bar: source badge, clock / cpu / tailscale chips."""
-    # Source badge (center). Hidden when LIVE -- in the car that's the normal
-    # state and just clutter; SIM (sim data) and NO DATA still show as a warning
-    # that what's on screen isn't real live CAN.
+    # Source badge (center) — only when NOT live: a clean Tesla top shows no
+    # "LIVE" chip; SIM / NO DATA still surface as a warning.
     src = snap.source or "NO DATA"
     if src != "LIVE":
         col = WARN if src == "SIM" else TEXT_DIM
