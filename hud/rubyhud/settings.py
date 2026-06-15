@@ -192,6 +192,7 @@ class SettingsPage(TouchMenu):
         # iwgetid/hostname/nmcli calls are TTL-cached -- they re-run at most once
         # every few seconds, never per frame. Fresh cache per submenu open.
         from .signals import _run
+        from .wifinet import _split_terse
 
         cache: dict = {}
 
@@ -208,8 +209,18 @@ class SettingsPage(TouchMenu):
             return v
 
         def ssid():
-            return cached("ssid", 4.0, lambda: (
-                (_run(["iwgetid", "-r"], timeout=2.0) or "").strip() or "--"))
+            # nmcli, not iwgetid (which isn't installed on the Pi -> "--").
+            # _split_terse unescapes nmcli's ':'/'\\' so a colon/backslash SSID
+            # renders cleanly (and consistently with the WI-FI page).
+            def _q():
+                out = _run(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+                           timeout=2.0)
+                for line in (out or "").splitlines():
+                    f = _split_terse(line)
+                    if len(f) >= 2 and f[0] == "yes":
+                        return f[1].strip() or "--"
+                return "--"
+            return cached("ssid", 4.0, _q)
 
         def ip():
             def _q():
@@ -222,8 +233,9 @@ class SettingsPage(TouchMenu):
                 out = _run(["nmcli", "-t", "-f", "ACTIVE,SIGNAL", "dev", "wifi"],
                            timeout=2.0)
                 for line in (out or "").splitlines():
-                    if line.startswith("yes:"):
-                        return line.split(":", 1)[1].strip() + "%"
+                    f = _split_terse(line)
+                    if len(f) >= 2 and f[0] == "yes":
+                        return f[1].strip() + "%"
                 return "--"
             return cached("sig", 6.0, _q)
 
@@ -231,6 +243,9 @@ class SettingsPage(TouchMenu):
             MenuItem("SSID", value_fn=ssid),
             MenuItem("IP", value_fn=ip),
             MenuItem("SIGNAL", value_fn=sig),
+            # Deep-link to the full-screen WI-FI page (scan / connect / manage).
+            MenuItem("MANAGE / CONNECT",
+                     on_tap=lambda ctx: ctx.__setitem__("nav_request", "WIFI")),
         ]
 
     # -- satellite (4" dash HUD) control ------------------------------------- #

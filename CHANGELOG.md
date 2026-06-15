@@ -2,6 +2,13 @@
 
 All notable changes. Releases are annotated tags `vX.Y.Z`. See `docs/UPDATING.md` for the OTA mechanics, rollback, and setup details. Root `VERSION` is the single source of truth (propagated to hud/, packages, firmware, and this file on cut).
 
+## v3.11.0 — 2026-06-15
+- WI-FI page (full-screen, deep-linked from CONFIGURE > WI-FI > MANAGE / CONNECT): scan + list nearby networks (signal bars, lock, SAVED/CONNECTED tags), connect with an on-screen WPA password keyboard, switch / disconnect / forget saved networks, one-tap iPhone hotspot. All nmcli work runs off the render thread via `wifinet`; credentials are owned by NetworkManager (never stored or logged by the HUD).
+- On-screen Pillow keyboard widget (`keyboard.py`): QWERTY + symbol layer, sticky shift, hand-drawn key glyphs; hit-tested in screen px.
+- Color-scheme groundwork (`theme.py`): palette reorganized as named schemes (`soul-red` default + `ion-blue`), `apply_scheme()`/`scheme_names()`; the in-HUD picker is a later release (architect-now).
+- Privilege: `netdev` polkit rule (`deploy/polkit/50-ruby-netdev-nm.rules`) lets the HUD service control NetworkManager (one-time root install, not OTA-delivered).
+- Fix: CONFIGURE > WI-FI SSID row now reads via nmcli (the prior `iwgetid` isn't installed on the Pi, so it always showed `--`).
+
 ## v3.10.0 — 2026-06-13
 - AI VISION on/off toggle in CONFIGURE (systemctl fire-and-forget via scoped sudoers; survives mid-update HUD restarts).
 - CarPlay foundation (architecture doc + `carplay/probe.js` + node-carplay notes); blocked on CarlinKit dongle + DRM/KMS handoff validation. NAVIGATION placeholder dropped.

@@ -1,0 +1,23 @@
+// Ruby HUD — let the `netdev` group control NetworkManager without a polkit
+// prompt, so the headless rubyhud service (user `michael`, already in netdev)
+// can scan / connect / save / forget WiFi from the on-screen WI-FI page.
+//
+// Michael authorized this grant (chose polkit-for-netdev over a sudoers rule).
+// It is scoped to NetworkManager actions only and to the netdev group only.
+//
+// INSTALL (one-time, as root on the Pi — NOT delivered by OTA):
+//   sudo install -o root -g root -m 0644 \
+//     deploy/polkit/50-ruby-netdev-nm.rules \
+//     /etc/polkit-1/rules.d/50-ruby-netdev-nm.rules
+//   sudo systemctl restart polkit
+// Verify (as michael):  nmcli -t general permissions | grep -E 'network-control|settings.modify.own|wifi.scan'
+//   -> should read ':yes' (was ':auth' before the rule).
+//
+// Remove:  sudo rm /etc/polkit-1/rules.d/50-ruby-netdev-nm.rules && sudo systemctl restart polkit
+
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 &&
+        subject.isInGroup("netdev")) {
+        return polkit.Result.YES;
+    }
+});

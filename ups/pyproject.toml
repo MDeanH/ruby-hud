@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rubyups"
-version = "3.10.0"
+version = "3.11.0"
 description = "Ruby Pi graceful power-loss daemon for the SunFounder PiPower 5 UPS HAT (SPC @ I2C 0x5C). Debounced AC-loss detection -> grace -> clean poweroff."
 requires-python = ">=3.11"
 # smbus2 is the only runtime dep and it is ALREADY in ruby-env (installed for

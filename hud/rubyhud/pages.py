@@ -1417,6 +1417,11 @@ def make_pages() -> list:
         pages.append(PlaybackPage())
     except Exception:
         pass
+    try:
+        from .wifipage import WiFiPage
+        pages.append(WiFiPage())
+    except Exception:
+        pass
     return pages
 
 

@@ -9,37 +9,94 @@ fallbacks (macOS build-host faces, then PIL's default) and never raise.
 from PIL import ImageFont
 
 # --- Palette (RGB) ---------------------------------------------------------
-# Tokens bound to Michael's "Mazda HUD" mockup (Downloads/Mazda HUD
-# (standalone).html): bg #07090c, ring track #2a3340, bright track #4a5666,
-# accent #d0273b, dim text #8d99a7.
-# Background ramp: slightly lighter at the top of the screen, deep at bottom.
-BG = (7, 9, 12)              # 07090C deep charcoal (bottom of ramp)
-BG_TOP = (12, 16, 22)        # 0C1016 top of the luminance ramp
+# Colors are organized as named *schemes* so a future CONFIGURE picker can
+# offer alternates. "soul-red" is the default, bound to Michael's "Mazda HUD"
+# mockup (Downloads/Mazda HUD (standalone).html): bg #07090c, ring track
+# #2a3340, bright track #4a5666, accent #d0273b, dim text #8d99a7.
+#
+# ARCHITECTURE NOTE (picker is a later release): every scheme dict carries the
+# exact same keys, and _bind() pushes the active scheme's values into the
+# module-level constants below. Adding a scheme = adding a dict entry. The
+# remaining work for a live in-HUD picker is (a) persisting the choice in
+# config.py, and (b) making callers read theme.X dynamically + clearing the
+# render.py static caches on switch -- because most modules do
+# `from .theme import ACCENT, ...` which binds once at import. New UI (e.g.
+# the WiFi page) imports tokens the same way, so it is automatically correct
+# for whichever scheme is active at process start.
+_SCHEMES = {
+    "soul-red": {                    # default (Mazda HUD mockup)
+        "BG": (7, 9, 12),            # 07090C deep charcoal (bottom of ramp)
+        "BG_TOP": (12, 16, 22),      # 0C1016 top of the luminance ramp
+        "PANEL": (16, 20, 27),       # 10141B card fill
+        "CARD": (16, 20, 27),        # alias of PANEL
+        "CARD_BORDER": (42, 51, 64),  # 2A3340 1px card border (ring track)
+        "CARD_EDGE": (58, 68, 84),   # 3A4454 lighter top-edge highlight
+        "ACCENT": (208, 39, 59),     # D0273B Soul Red
+        "ACCENT_GLOW": (255, 77, 92),  # FF4D5C brighter glow tone
+        "ACCENT_DIM": (104, 20, 30),  # deep red (gradient tails)
+        "DANGER": (255, 59, 48),     # FF3B30
+        "WARN": (255, 179, 0),       # FFB300
+        "OK": (46, 204, 113),        # 2ECC71
+        "TEXT": (243, 247, 251),     # F3F7FB bright text
+        "TEXT_DIM": (141, 153, 167),  # 8D99A7 dim text
+        "TICK": (42, 51, 64),        # 2A3340 gauge tracks / ticks
+        "TICK_BRIGHT": (74, 86, 102),  # 4A5666 brighter track
+        "NEEDLE": (245, 247, 250),   # needle color
+        "ROW_A": (15, 19, 25),       # 0F1319 zebra row (CAN page)
+        "ROW_B": (11, 14, 19),       # 0B0E13 zebra row
+    },
+    "ion-blue": {                    # alternate (cool) -- groundwork, not yet
+        "BG": (7, 10, 14),           # selectable; here to prove the registry.
+        "BG_TOP": (12, 17, 24),
+        "PANEL": (16, 22, 30),
+        "CARD": (16, 22, 30),
+        "CARD_BORDER": (40, 54, 68),
+        "CARD_EDGE": (56, 72, 92),
+        "ACCENT": (38, 138, 221),    # 268ADD
+        "ACCENT_GLOW": (90, 178, 255),
+        "ACCENT_DIM": (18, 60, 100),
+        "DANGER": (255, 59, 48),
+        "WARN": (255, 179, 0),
+        "OK": (46, 204, 113),
+        "TEXT": (243, 247, 251),
+        "TEXT_DIM": (139, 153, 167),
+        "TICK": (40, 54, 68),
+        "TICK_BRIGHT": (72, 92, 112),
+        "NEEDLE": (245, 247, 250),
+        "ROW_A": (14, 19, 26),
+        "ROW_B": (10, 14, 20),
+    },
+}
+_ACTIVE_SCHEME = "soul-red"
 
-# Cards / panels.
-PANEL = (16, 20, 27)         # 10141B card fill
-CARD = PANEL                 # alias
-CARD_BORDER = (42, 51, 64)   # 2A3340 1px card border (mockup ring track)
-CARD_EDGE = (58, 68, 84)     # 3A4454 1px lighter top-edge highlight
 
-# Accent + state colors.
-ACCENT = (208, 39, 59)       # D0273B mockup Soul Red
-ACCENT_GLOW = (255, 77, 92)  # FF4D5C brighter glow tone
-ACCENT_DIM = (104, 20, 30)   # deep red (gradient tails, dim accents)
-DANGER = (255, 59, 48)       # FF3B30
-WARN = (255, 179, 0)         # FFB300
-OK = (46, 204, 113)          # 2ECC71
+def scheme_names() -> list:
+    """Names of the available color schemes (for a future picker)."""
+    return list(_SCHEMES)
 
-# Text / strokes.
-TEXT = (243, 247, 251)       # F3F7FB (mockup bright text)
-TEXT_DIM = (141, 153, 167)   # 8D99A7 (mockup dim text)
-TICK = (42, 51, 64)          # 2A3340 gauge tracks / tick marks (mockup)
-TICK_BRIGHT = (74, 86, 102)  # 4A5666 brighter track (mockup)
-NEEDLE = (245, 247, 250)     # needle color
 
-# Table zebra rows (CAN page).
-ROW_A = (15, 19, 25)         # 0F1319
-ROW_B = (11, 14, 19)         # 0B0E13
+def active_scheme() -> str:
+    return _ACTIVE_SCHEME
+
+
+def _bind(name: str) -> None:
+    """Push a scheme's values into the module-level color constants."""
+    p = _SCHEMES.get(name) or _SCHEMES["soul-red"]
+    globals().update(p)
+    globals()["_ACTIVE_SCHEME"] = name if name in _SCHEMES else "soul-red"
+
+
+def apply_scheme(name: str) -> None:
+    """Rebind the active scheme. NOTE: only affects attribute access via
+    `theme.X` afterwards; modules that did `from .theme import ACCENT` keep
+    their import-time binding, and render.py's static caches must be cleared.
+    Wiring those is the picker's follow-up work (see ARCHITECTURE NOTE)."""
+    _bind(name)
+
+
+# Bind the default scheme so the constants (BG, PANEL, ACCENT, ...) exist at
+# import for every `from .theme import ...` caller.
+_bind(_ACTIVE_SCHEME)
 
 
 def mix(a, b, t):
