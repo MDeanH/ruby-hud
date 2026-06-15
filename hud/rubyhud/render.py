@@ -111,23 +111,17 @@ def _chrome_static(w: int, h: int) -> Image.Image:
     img = _gradient_bg(sw, sh)
     draw = ImageDraw.Draw(img)
 
-    # Top strip: slightly recessed band + 1px bottom separator.
+    # Top + bottom hairline separators only — no recessed band, no accent bar.
+    # A clean near-black field top to bottom is the Tesla language.
     strip_h = TOP_STRIP_H * SS
-    draw.rectangle([0, 0, sw, strip_h], fill=(15, 18, 22))
-    draw.line([(0, strip_h), (sw, strip_h)], fill=CARD_BORDER, width=SS)
+    hair = mix(BG, CARD_BORDER, 0.6)
+    draw.line([(0, strip_h), (sw, strip_h)], fill=hair, width=SS)
+    draw.line([(0, BOT_SEP_Y * SS), (sw, BOT_SEP_Y * SS)], fill=hair, width=SS)
 
-    # Wordmark + accent underline segment (static forever).
-    wfont = font(40 * SS, "bold")
-    draw.text((40 * SS, 16 * SS), "RUBY", font=wfont, fill=TEXT)
-    rw = gauges._text_size(draw, "RUBY", wfont)[0]
-    draw.text((40 * SS + rw + 16 * SS, 30 * SS), "MX-5",
-              font=font(22 * SS, "bold"), fill=TEXT_DIM)
-    draw.rectangle([40 * SS, 62 * SS, 40 * SS + rw, 62 * SS + 2 * SS],
-                   fill=ACCENT)
-
-    # Bottom strip: 1px top separator.
-    draw.line([(0, BOT_SEP_Y * SS), (sw, BOT_SEP_Y * SS)],
-              fill=CARD_BORDER, width=SS)
+    # Wordmark (letter-spaced, calm). The live-status dot + channel are drawn
+    # dynamically just to its right by _draw_top_bar.
+    gauges.tracked_text(draw, 40 * SS, 22 * SS, "RUBY", font(29 * SS, "bold"),
+                        TEXT, tracking=7 * SS)
 
     _BASE_CACHE[key] = img
     return img
@@ -209,71 +203,71 @@ def _page_static(pages, idx, w: int, h: int) -> Image.Image:
 # --------------------------------------------------------------------------- #
 # dynamic global chrome
 # --------------------------------------------------------------------------- #
+def _dot(draw, cx, cy, r, col):
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+
+
 def _draw_top_bar(draw, snap):
-    """Dynamic top bar: source badge, clock / cpu / tailscale chips."""
-    # Source badge (center) — only when NOT live: a clean Tesla top shows no
-    # "LIVE" chip; SIM / NO DATA still surface as a warning.
-    src = snap.source or "NO DATA"
-    if src != "LIVE":
-        col = WARN if src == "SIM" else TEXT_DIM
-        sfont = font(25 * SS, "bold")
-        sw = gauges._text_size(draw, src, sfont)[0] + 40 * SS
-        gauges.status_chip(draw, SW // 2 - sw // 2, 16 * SS, src, col,
-                           filled=(src != "NO DATA"), scale=SS)
-
-    # Right cluster: clock, cpu temp, tailscale chip.
-    x = SW - 40 * SS
-    ts = (snap.tailscale or "down").lower()
-    ts_col = OK if ts in ("up", "active", "on") else TEXT_DIM
-    tw, _ = gauges.status_chip(draw, 0, -999, "TS " + ts.upper(), ts_col,
-                               scale=SS)
-    x -= tw
-    gauges.status_chip(draw, x, 16 * SS, "TS " + ts.upper(), ts_col, scale=SS)
-
+    """Clean Tesla top bar: a calm live-status dot beside the wordmark, a
+    centered clock, CPU temp at the right. No 'LIVE' chip, no pills — when live
+    the dot alone says so; SIM / NO DATA surface in colour."""
     from . import config
+    cy = 36 * SS
+    # left: status dot beside RUBY. Live = quiet green dot (no word). SIM / NO
+    # DATA add a short coloured label.
+    src = snap.source or "NO DATA"
+    if src == "LIVE":
+        _dot(draw, 182 * SS, cy, 5 * SS, OK)
+    else:
+        col = WARN if src == "SIM" else DANGER
+        _dot(draw, 182 * SS, cy, 5 * SS, col)
+        gauges.tracked_text(draw, 198 * SS, cy, src, font(18 * SS, "regular"),
+                            col, tracking=2 * SS, anchor="lm")
+
+    # center: clock.
+    draw.text((SW // 2, cy), snap.clock or "--:--", font=font(28 * SS, "mono"),
+              fill=TEXT, anchor="mm")
+
+    # right: CPU temp (thin grey).
     cpu = snap.cpu_temp_c
     cpu_txt = ("CPU --" if cpu is None
                else "CPU %d%s" % (int(round(config.c_to_disp(cpu))),
                                   config.temp_label()))
-    cfont = font(24 * SS, "bold")
-    cw = gauges._text_size(draw, cpu_txt, cfont)[0]
-    x -= cw + 26 * SS
-    draw.text((x, 25 * SS), cpu_txt, font=cfont, fill=TEXT_DIM)
-
-    clk = snap.clock or "--:--"
-    clkfont = font(30 * SS, "mono")
-    clw = gauges._text_size(draw, clk, clkfont)[0]
-    x -= clw + 30 * SS
-    draw.text((x, 22 * SS), clk, font=clkfont, fill=TEXT)
+    draw.text((SW - 40 * SS, cy), cpu_txt, font=font(20 * SS, "regular"),
+              fill=TEXT_DIM, anchor="rm")
 
 
 def _draw_bottom_strip(draw, snap):
-    y = 748 * SS
-    x = 40 * SS
-
+    """Bottom status as thin tracked text (no pills): bus dot + fps and any
+    LISTEN-ONLY flag at the left, fuel at the right. The page-nav dots own the
+    centre (drawn statically)."""
+    cy = 757 * SS
+    # left: bus state.
     state = snap.can_bus_state or "NO BUS"
     bus_ok = state == "UP" and (snap.can_fps or 0) > 0
-    bus_col = OK if bus_ok else (DANGER if state == "ERROR" else TEXT_DIM)
-    w, _ = gauges.status_chip(draw, x, y, "BUS " + state, bus_col,
-                              filled=bus_ok, scale=SS)
-    x += w + 16 * SS
-
-    fw, _ = gauges.status_chip(draw, x, y, "fps %d" % int(snap.can_fps or 0),
-                               TEXT_DIM, scale=SS)
-    x += fw + 16 * SS
-
+    if bus_ok:
+        _dot(draw, 46 * SS, cy, 5 * SS, OK)
+        x = gauges.tracked_text(draw, 62 * SS, cy,
+                                "CAN  ·  %d fps" % int(snap.can_fps or 0),
+                                font(17 * SS, "regular"), TEXT_DIM,
+                                tracking=2 * SS, anchor="lm")
+    else:
+        col = DANGER if state == "ERROR" else TEXT_DIM
+        _dot(draw, 46 * SS, cy, 5 * SS, col)
+        x = gauges.tracked_text(draw, 62 * SS, cy, "BUS " + state,
+                                font(17 * SS, "regular"), col,
+                                tracking=2 * SS, anchor="lm")
     if snap.can_listen_only:
-        lw, _ = gauges.status_chip(draw, x, y, "LISTEN-ONLY", WARN, scale=SS)
-        x += lw + 16 * SS
+        gauges.tracked_text(draw, x + 24 * SS, cy, "LISTEN-ONLY",
+                            font(15 * SS, "bold"), WARN, tracking=2 * SS,
+                            anchor="lm")
 
-    # Fuel chip is right-aligned so the centered nav dots never collide with
-    # the left chip row (which reaches ~740px with LISTEN-ONLY present).
+    # right: fuel.
     if _num(snap.fuel_pct) is not None:
         fuel = max(0.0, min(100.0, float(snap.fuel_pct)))
-        fcol = DANGER if fuel < 12 else (WARN if fuel < 25 else OK)
-        txt = "FUEL %d%%" % int(round(fuel))
-        fwidth, _ = gauges.status_chip(draw, 0, -999, txt, fcol, scale=SS)
-        gauges.status_chip(draw, SW - 40 * SS - fwidth, y, txt, fcol, scale=SS)
+        fcol = DANGER if fuel < 12 else (WARN if fuel < 25 else TEXT_DIM)
+        draw.text((SW - 40 * SS, cy), "FUEL %d%%" % int(round(fuel)),
+                  font=font(18 * SS, "regular"), fill=fcol, anchor="rm")
 
 
 def _draw_tap_fx(img, fx):
