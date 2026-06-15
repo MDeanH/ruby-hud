@@ -119,6 +119,31 @@ def _polar(cx, cy, r, deg):
     return (cx + r * math.cos(rad), cy + r * math.sin(rad))
 
 
+def arc_seg(draw, cx, cy, r, a0, a1, color, width):
+    """Thin arc segment on the main canvas. Angles in degrees, 0=3 o'clock,
+    increasing clockwise (PIL convention). Cheap; safe for per-frame use."""
+    if a1 <= a0:
+        return
+    draw.arc([cx - r, cy - r, cx + r, cy + r], a0, a1, fill=color,
+             width=max(1, int(width)))
+
+
+def arc_glow(img, cx, cy, r, a0, a1, color, width, blur):
+    """Soft-glow arc: a blurred copy of the segment. Runs GaussianBlur, so call
+    only from render_static (cached in the static layer), never per frame."""
+    if a1 <= a0:
+        return
+    pad = int(blur * 3 + width + 4)
+    size = int(2 * r + 2 * pad)
+    if size <= 0:
+        return
+    spr = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(spr).arc([pad, pad, pad + 2 * r, pad + 2 * r], a0, a1,
+                            fill=tuple(color) + (255,), width=max(1, int(width)))
+    spr = spr.filter(ImageFilter.GaussianBlur(int(blur)))
+    img.paste(spr, (int(cx - r - pad), int(cy - r - pad)), spr)
+
+
 # Sweep constants for the dial / arc_gauge: 270deg from 135 to 405.
 _ARC_START = 135.0
 _ARC_END = 405.0
