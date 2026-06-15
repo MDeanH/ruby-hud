@@ -83,117 +83,173 @@ class Page:
 # Page 1: gauges (the hero screen)
 # --------------------------------------------------------------------------- #
 class GaugesPage(Page):
+    """Tesla-language driving display: a hairline rpm arc with a red redline
+    segment wraps the left, a large hero speed numeral sits center-left, a big
+    gear on the right, and a calm row of vitals (coolant / fuel / battery /
+    throttle) along the bottom-right. Numbers are the design — no skeuomorphic
+    dial. Static chrome (arc track + redline + labels + vital tracks) renders
+    once; only the live values + arc/dot render per frame."""
+
     name = "GAUGES"
 
-    # Dial geometry (screen px, pre-supersample).
-    DIAL_CX, DIAL_CY, DIAL_R = 380, 430, 260
-    REDLINE_FROM = 6500.0  # redline sector start (design spec)
+    # rpm arc (screen px, pre-supersample). 0 rpm at ARC_A0; full range sweeps
+    # ARC_SWEEP deg clockwise (0deg = 3 o'clock, PIL convention).
+    ARC_CX, ARC_CY, ARC_R = 415, 410, 285
+    # Standard tach orientation: opening at the BOTTOM. 0 rpm at lower-left
+    # (135deg), sweeping clockwise 270deg up and over to lower-right (redline).
+    ARC_A0, ARC_SWEEP = 135.0, 270.0
+    REDLINE = 7000.0                      # of RPM_MAX (8000)
 
-    # Speed hero block.
-    SPD_RIGHT, SPD_BASE = 950, 392
-    GEAR_CX, GEAR_CY, GEAR_SIZE = 870, 540, 120
+    # hero numerals (drawn anchor middle/baseline).
+    SPD_CX, SPD_BASE = 430, 430
+    GEAR_CX, GEAR_BASE = 980, 470
+    STRIP_Y = 558
+    GEARS = ("N", "1", "2", "3", "4", "5", "6")
 
-    # Right pill meters (clear of the MPH unit and the right chevron).
-    PILL_Y, PILL_H, PILL_W = 120, 400, 36
-    PILL_XS = (1088, 1148, 1208)
+    # bottom-right vitals row (kept clear of the global bottom strip at y>=736).
+    VIT_XS = (700, 836, 972, 1108)
+    VIT_LABEL_Y, VIT_VALUE_Y, VIT_BAR_Y = 612, 654, 666
+    VIT_BAR_W = 112
 
+    def _rpm_a1(self, rpm):
+        return self.ARC_A0 + _frac(rpm, 0, RPM_MAX) * self.ARC_SWEEP
+
+    # ---- static chrome -------------------------------------------------- #
     def render_static(self, draw, img):
-        cx, cy, r = self.DIAL_CX * SS, self.DIAL_CY * SS, self.DIAL_R * SS
-        gauges.dial_static(img, draw, cx, cy, r,
-                           self.REDLINE_FROM / RPM_MAX, rpm_max=RPM_MAX,
-                           scale=SS)
+        cx, cy, r = self.ARC_CX * SS, self.ARC_CY * SS, self.ARC_R * SS
+        a0, a1 = self.ARC_A0, self.ARC_A0 + self.ARC_SWEEP
+        rl0 = self.ARC_A0 + (self.REDLINE / RPM_MAX) * self.ARC_SWEEP
+        # arc track: faint halo + dim base line.
+        gauges.arc_glow(img, cx, cy, r, a0, a1, mix(theme.BG, TICK, 0.5),
+                        8 * SS, 6 * SS)
+        gauges.arc_seg(draw, cx, cy, r, a0, a1, mix(theme.BG, TEXT_DIM, 0.32),
+                       3 * SS)
+        # redline segment — bright + strong glow (pops on entry).
+        gauges.arc_glow(img, cx, cy, r, rl0, a1, DANGER, 8 * SS, 6 * SS)
+        gauges.arc_seg(draw, cx, cy, r, rl0, a1, DANGER, 4 * SS)
+        # tick labels 0,2,4,6,8 (thousands) just inside the arc.
+        tf = font(15 * SS, "regular")
+        for i, lab in enumerate(("0", "2", "4", "6", "8")):
+            px, py = gauges._polar(cx, cy, (self.ARC_R - 36) * SS,
+                                   a0 + (i / 4.0) * self.ARC_SWEEP)
+            gauges._centered_text(draw, px, py, lab, tf, mix(theme.BG, TEXT_DIM, 0.55))
+        # speed unit + rpm/gear labels.
+        gauges.tracked_text_center(draw, self.SPD_CX * SS, (self.SPD_BASE + 56) * SS,
+                                   config.speed_label().upper(),
+                                   font(22 * SS, "regular"), TEXT_DIM, tracking=9 * SS)
+        gauges.tracked_text_center(draw, self.ARC_CX * SS, 636 * SS, "RPM",
+                                   font(14 * SS, "regular"),
+                                   mix(theme.BG, TEXT_DIM, 0.7), tracking=4 * SS)
+        gauges.tracked_text_center(draw, self.GEAR_CX * SS, 300 * SS, "GEAR",
+                                   font(14 * SS, "regular"),
+                                   mix(theme.BG, TEXT_DIM, 0.7), tracking=6 * SS)
+        # vitals: divider + per-vital label + dim track bar.
+        draw.line([(700 * SS, 586 * SS), (1232 * SS, 586 * SS)],
+                  fill=mix(theme.BG, CARD_BORDER, 0.7), width=max(1, SS))
+        lf = font(13 * SS, "regular")
+        for x, lab in zip(self.VIT_XS, ("COOLANT", "FUEL", "BATTERY", "THROTTLE")):
+            gauges.tracked_text(draw, x * SS, self.VIT_LABEL_Y * SS, lab, lf,
+                                mix(theme.BG, TEXT_DIM, 0.6), tracking=3 * SS,
+                                anchor="ls")
+            draw.rounded_rectangle([x * SS, self.VIT_BAR_Y * SS,
+                                    (x + self.VIT_BAR_W) * SS,
+                                    (self.VIT_BAR_Y + 3) * SS],
+                                   radius=int(1.5 * SS), fill=mix(theme.BG, TICK, 0.85))
 
-        # Speed unit, baseline-aligned with the (dynamic) numerals.
-        spd_unit = config.speed_label()
-        try:
-            draw.text(((self.SPD_RIGHT + 12) * SS, self.SPD_BASE * SS),
-                      spd_unit, font=font(40 * SS, "bold"), fill=TEXT_DIM,
-                      anchor="ls")
-        except Exception:
-            draw.text(((self.SPD_RIGHT + 12) * SS,
-                       (self.SPD_BASE - 34) * SS), spd_unit,
-                      font=font(40 * SS, "bold"), fill=TEXT_DIM)
-
-        # Gear plate (letter is dynamic).
-        gauges.gear_plate(draw, self.GEAR_CX * SS, self.GEAR_CY * SS,
-                          self.GEAR_SIZE * SS)
-
-        # Pill meter chrome.
-        y, h, w = self.PILL_Y * SS, self.PILL_H * SS, self.PILL_W * SS
-        specs = (
-            ("COOL", config.temp_label(), self._coolant_markers(False)),
-            ("VOLT", "V", self._volt_markers(False)),
-            ("THR", "%", None),
-        )
-        for x, (label, unit, markers) in zip(self.PILL_XS, specs):
-            gauges.pill_static(img, draw, x * SS, y, w, h, label, unit,
-                               markers=markers, scale=SS)
-
-    @staticmethod
-    def _coolant_markers(value):
-        hot = _num(value) is not None and float(value) > 100
-        vhot = _num(value) is not None and float(value) > 110
-        return [
-            (_frac(100, COOLANT_LO, COOLANT_HI), WARN, hot and not vhot),
-            (_frac(110, COOLANT_LO, COOLANT_HI), DANGER, vhot),
-        ]
-
-    @staticmethod
-    def _volt_markers(value):
-        low = _num(value) is not None and float(value) < 11.8
-        vlow = _num(value) is not None and float(value) < 11.2
-        return [
-            (_frac(11.8, VOLTS_LO, VOLTS_HI), WARN, low and not vlow),
-            (_frac(11.2, VOLTS_LO, VOLTS_HI), DANGER, vlow),
-        ]
-
+    # ---- dynamic -------------------------------------------------------- #
     def render(self, draw, img, snap, ctx):
-        self._tach(draw, img, snap)
-        self._speed_and_gear(draw, snap)
-        self._right_meters(draw, img, snap)
+        self._rpm_arc(draw, img, snap)
+        self._speed(draw, snap)
+        self._gear(draw, snap)
+        self._vitals(draw, snap)
         self._warnings(draw, img, snap)
 
-    def _tach(self, draw, img, snap):
-        cx, cy, r = self.DIAL_CX * SS, self.DIAL_CY * SS, self.DIAL_R * SS
-        frac = _frac(snap.rpm, 0, RPM_MAX)
-        gauges.dial_sweep(img, cx, cy, r, frac)
-        gauges.dial_needle(img, draw, cx, cy, r, frac)
+    def _rpm_arc(self, draw, img, snap):
+        cx, cy, r = self.ARC_CX * SS, self.ARC_CY * SS, self.ARC_R * SS
         rpm = _num(snap.rpm)
-        vt = "--" if rpm is None else "%d" % int(round(rpm))
-        in_red = rpm is not None and float(rpm) >= self.REDLINE_FROM
-        gauges._centered_text(draw, cx, cy - int(r * 0.10), vt,
-                              font(int(r * 0.30), "bold"),
-                              DANGER if in_red else TEXT)
+        in_red = rpm is not None and float(rpm) >= self.REDLINE
+        accent = DANGER if in_red else TEXT
+        if rpm is not None and float(rpm) > 0:
+            a1 = self._rpm_a1(rpm)
+            gauges.arc_seg(draw, cx, cy, r, self.ARC_A0, a1, accent, 4 * SS)
+            dx, dy = gauges._polar(cx, cy, r, a1)
+            g = gauges.glow_dot(int(14 * SS), ACCENT_GLOW if in_red else TEXT,
+                                strength=0.7)
+            img.paste(g, (int(dx - g.width / 2), int(dy - g.height / 2)), g)
+            draw.ellipse([dx - 5 * SS, dy - 5 * SS, dx + 5 * SS, dy + 5 * SS],
+                         fill=accent)
+        vt = "--" if rpm is None else "%d" % int(round(float(rpm)))
+        gauges._centered_text(draw, self.ARC_CX * SS, 608 * SS, vt,
+                              font(34 * SS, "thin"), accent if in_red else TEXT)
 
-    def _speed_and_gear(self, draw, snap):
+    def _speed(self, draw, snap):
         speed = _num(snap.speed_mph)
-        spd = "--" if speed is None else "%d" % int(round(_disp_speed(speed)))
-        gauges.kerned_right(draw, self.SPD_RIGHT * SS, self.SPD_BASE * SS,
-                            spd, font(170 * SS, "bold"), TEXT,
-                            tracking=-8 * SS)
-        gauges.gear_value(draw, self.GEAR_CX * SS, self.GEAR_CY * SS,
-                          snap.gear, self.GEAR_SIZE * SS)
+        spd = "--" if speed is None else "%d" % int(round(_disp_speed(float(speed))))
+        try:
+            draw.text((self.SPD_CX * SS, self.SPD_BASE * SS), spd,
+                      font=font(280 * SS, "thin"), fill=TEXT, anchor="ms")
+        except Exception:
+            gauges._centered_text(draw, self.SPD_CX * SS, (self.SPD_BASE - 90) * SS,
+                                  spd, font(280 * SS, "thin"), TEXT)
 
-    def _right_meters(self, draw, img, snap):
-        y, h, w = self.PILL_Y * SS, self.PILL_H * SS, self.PILL_W * SS
+    def _gear(self, draw, snap):
+        g = snap.gear or "-"
+        glyph = g if g != "-" else "–"
+        try:
+            draw.text((self.GEAR_CX * SS, self.GEAR_BASE * SS), glyph,
+                      font=font(220 * SS, "thin"), fill=TEXT, anchor="ms")
+        except Exception:
+            gauges._centered_text(draw, self.GEAR_CX * SS, (self.GEAR_BASE - 70) * SS,
+                                  glyph, font(220 * SS, "thin"), TEXT)
+        sf = font(17 * SS, "regular")
+        step = 36
+        x0 = self.GEAR_CX - (len(self.GEARS) - 1) * step // 2
+        for i, gl in enumerate(self.GEARS):
+            gx = (x0 + i * step) * SS
+            cur = (gl == g)
+            gauges._centered_text(draw, gx, self.STRIP_Y * SS, gl, sf,
+                                  TEXT if cur else mix(theme.BG, TEXT_DIM, 0.45))
+            if cur:
+                draw.line([(gx - 9 * SS, (self.STRIP_Y + 16) * SS),
+                           (gx + 9 * SS, (self.STRIP_Y + 16) * SS)],
+                          fill=TEXT, width=max(1, int(2.5 * SS)))
 
-        coolant = _num(snap.coolant_c)
-        cval = None if coolant is None else "%d" % int(round(_disp_temp(coolant)))
-        gauges.pill_fill(img, draw, self.PILL_XS[0] * SS, y, w, h,
-                         _frac(snap.coolant_c, COOLANT_LO, COOLANT_HI),
-                         cval, markers=self._coolant_markers(coolant),
-                         scale=SS)
-
-        volts = _num(snap.volts)
-        vval = None if volts is None else "%.1f" % float(volts)
-        gauges.pill_fill(img, draw, self.PILL_XS[1] * SS, y, w, h,
-                         _frac(snap.volts, VOLTS_LO, VOLTS_HI),
-                         vval, markers=self._volt_markers(volts), scale=SS)
-
-        throttle = _num(snap.throttle_pct)
-        tval = None if throttle is None else "%d" % int(round(throttle))
-        gauges.pill_fill(img, draw, self.PILL_XS[2] * SS, y, w, h,
-                         _frac(snap.throttle_pct, 0, 100), tval, scale=SS)
+    def _vitals(self, draw, snap):
+        coolant, fuel = _num(snap.coolant_c), _num(snap.fuel_pct)
+        volts, thr = _num(snap.volts), _num(snap.throttle_pct)
+        ccol = TEXT if coolant is None else (
+            DANGER if coolant > 110 else WARN if coolant > 100 else TEXT)
+        fcol = TEXT if fuel is None else (
+            DANGER if fuel < 10 else WARN if fuel < 20 else TEXT)
+        vcol = TEXT if volts is None else (
+            DANGER if volts < 11.2 else WARN if volts < 11.8 else TEXT)
+        items = (
+            (None if coolant is None else "%d" % round(_disp_temp(float(coolant))),
+             config.temp_label(), _frac(snap.coolant_c, COOLANT_LO, COOLANT_HI), ccol),
+            (None if fuel is None else "%d" % round(float(fuel)), "%",
+             (float(fuel) / 100.0 if fuel is not None else 0.0), fcol),
+            (None if volts is None else "%.1f" % float(volts), "V",
+             _frac(snap.volts, VOLTS_LO, VOLTS_HI), vcol),
+            (None if thr is None else "%d" % round(float(thr)), "%",
+             (float(thr) / 100.0 if thr is not None else 0.0), TEXT),
+        )
+        vf, uf = font(38 * SS, "thin"), font(19 * SS, "regular")
+        for x, (val, unit, frac, col) in zip(self.VIT_XS, items):
+            vx, vy = x * SS, self.VIT_VALUE_Y * SS
+            s = "--" if val is None else val
+            draw.text((vx, vy), s, font=vf, fill=col, anchor="ls")
+            try:
+                w = draw.textlength(s, font=vf)
+            except Exception:
+                w = len(s) * 20 * SS
+            draw.text((vx + w + 6 * SS, vy), unit, font=uf, fill=TEXT_DIM,
+                      anchor="ls")
+            fw = int(max(0.0, min(1.0, frac)) * self.VIT_BAR_W * SS)
+            if fw > 0:
+                barcol = col if col in (WARN, DANGER) else mix(TEXT_DIM, TEXT, 0.25)
+                draw.rounded_rectangle([vx, self.VIT_BAR_Y * SS, vx + fw,
+                                        (self.VIT_BAR_Y + 3) * SS],
+                                       radius=int(1.5 * SS), fill=barcol)
 
     @staticmethod
     def _warnings(draw, img, snap):
@@ -220,116 +276,71 @@ class VehiclePage(Page):
 
     name = "VEHICLE"
 
-    # 4-col x 2-row tile grid (screen px, pre-supersample).
-    TILE_W, TILE_H = 292, 188
-    GRID_X, GRID_Y = 32, 120
-    GAP_X, GAP_Y = 16, 12
+    # 4 columns x 2 rows of vital atoms (screen px, pre-supersample).
+    COL_XS = (56, 360, 664, 968)
+    ROW_YS = (172, 408)            # label baselines
+    VAL_SIZE, BAR_W = 64, 200
 
     # Bottom status-chip strip.
     CHIP_Y = 548
-    CHIP_X = 32
+    CHIP_X = 56
 
-    # (title, unit) per tile, row-major; values supplied per frame by _value.
-    _TILES = (
-        ("SPEED", "MPH"), ("RPM", ""), ("GEAR", ""), ("COOLANT", "F"),
-        ("FUEL", "%"), ("THROTTLE", "%"), ("MAP", "kPa"), ("SoC", "F"),
-    )
-
-    def _cells(self):
-        return [(self.GRID_X + c * (self.TILE_W + self.GAP_X),
-                 self.GRID_Y + r * (self.TILE_H + self.GAP_Y))
-                for r in range(2) for c in range(4)]
+    def _slots(self):
+        return [(x, y) for y in self.ROW_YS for x in self.COL_XS]
 
     # ---- static chrome ---------------------------------------------------
     def render_static(self, draw, img):
-        gauges.tracked_text(draw, 52 * SS, 84 * SS, "VEHICLE  ·  ND1 MX-5 RF",
-                            font(26 * SS, "bold"), TEXT, tracking=4 * SS)
-        cells = self._cells()
-        for (title, unit), cell in zip(self._TILES, cells):
-            x, y = cell[0] * SS, cell[1] * SS
-            w, h = self.TILE_W * SS, self.TILE_H * SS
-            # Resolve unit labels that follow the active config.
-            u = unit
-            if title in ("COOLANT", "SoC"):
-                u = config.temp_label()
-            elif title == "SPEED":
-                u = config.speed_label()
-            gauges.card(draw, x, y, x + w, y + h, radius=14 * SS, scale=SS)
-            gauges.tracked_text(draw, x + 22 * SS, y + 16 * SS, title,
-                                font(19 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
-            if u:
-                draw.text((x + w - 22 * SS, y + 18 * SS), u,
-                          font=font(20 * SS, "regular"), fill=TEXT_DIM,
-                          anchor="ra")
-        # Chip-strip separator.
-        draw.line([(self.CHIP_X * SS, (self.CHIP_Y - 16) * SS),
-                   ((SW // SS - self.CHIP_X) * SS, (self.CHIP_Y - 16) * SS)],
-                  fill=CARD_BORDER, width=SS)
+        gauges.tracked_text(draw, 56 * SS, 92 * SS, "VEHICLE",
+                            font(22 * SS, "regular"), TEXT_DIM, tracking=8 * SS)
+        draw.line([(self.CHIP_X * SS, (self.CHIP_Y - 18) * SS),
+                   ((SW // SS - self.CHIP_X) * SS, (self.CHIP_Y - 18) * SS)],
+                  fill=mix(theme.BG, CARD_BORDER, 0.7), width=max(1, SS))
 
     # ---- dynamic ---------------------------------------------------------
     def render(self, draw, img, snap, ctx):
-        cells = self._cells()
-        for (title, _unit), cell in zip(self._TILES, cells):
-            val, col, sub = self._value(title, snap)
-            self._tile(draw, cell, val, col, sub)
+        for (x, ly), atom in zip(self._slots(), self._atoms(snap)):
+            label, value, unit, frac, color, sub = atom
+            gauges.vital_atom(draw, x * SS, ly * SS, label, value, unit, color,
+                              frac=frac, sub=sub, scale=SS,
+                              value_size=self.VAL_SIZE, bar_w=self.BAR_W)
         self._chip_strip(draw, snap)
 
     @staticmethod
-    def _value(title, snap):
-        """Return (value_str|None, color, sub|None) for a tile title."""
-        if title == "SPEED":
-            v = _num(snap.speed_mph)
-            return (None if v is None
-                    else "%d" % int(round(_disp_speed(v)))), TEXT, None
-        if title == "RPM":
-            v = _num(snap.rpm)
-            # ND1 2.0L redline 6800 rpm.
-            col = DANGER if (v is not None and v >= 6800) else TEXT
-            return (None if v is None else "%d" % int(round(v))), col, None
-        if title == "GEAR":
-            g = snap.gear or "-"
-            return (g if g != "-" else None), ACCENT, None
-        if title == "COOLANT":
-            v = _num(snap.coolant_c)
-            col = TEXT
-            if v is not None:
-                col = DANGER if v > 110 else (WARN if v > 100 else OK)
-            return (None if v is None
-                    else "%d" % int(round(_disp_temp(v)))), col, None
-        if title == "SoC":
-            v = _num(snap.cpu_temp_c)
-            col = TEXT
-            if v is not None:
-                col = DANGER if v > 80 else (WARN if v > 70 else OK)
-            return (None if v is None
-                    else "%d" % int(round(_disp_temp(v)))), col, None
-        if title == "FUEL":
-            v = _num(snap.fuel_pct)
-            col = TEXT
-            if v is not None:
-                col = DANGER if v < 10 else (WARN if v < 20 else OK)
-            sub = None if v is None else "~%.0f L of 45" % (v / 100.0 * 45.0)
-            return (None if v is None else "%d" % int(round(v))), col, sub
-        if title == "THROTTLE":
-            v = _num(snap.throttle_pct)
-            return (None if v is None else "%d" % int(round(v))), TEXT, None
-        if title == "MAP":
-            v = _num(snap.map_kpa)
-            sub = None
-            if v is not None:
-                boost = v - 101.3  # vs ~sea-level baro (NA engine: vacuum)
-                sub = "%+.0f vs baro" % boost
-            return (None if v is None else "%d" % int(round(v))), TEXT, sub
-        return None, TEXT, None
-
-    def _tile(self, draw, cell, value, vcol, sub):
-        x, y = cell[0] * SS, cell[1] * SS
-        vt = "--" if value is None else str(value)
-        draw.text((x + 22 * SS, y + 60 * SS), vt,
-                  font=font(72 * SS, "bold"), fill=vcol or TEXT)
-        if sub:
-            draw.text((x + 22 * SS, y + (self.TILE_H - 34) * SS), str(sub),
-                      font=font(18 * SS, "regular"), fill=TEXT_DIM)
+    def _atoms(snap):
+        """Per-atom (label, value, unit, frac|None, color, sub|None), row-major
+        matching _slots()."""
+        sp, rpm = _num(snap.speed_mph), _num(snap.rpm)
+        g = snap.gear or "-"
+        cool, fuel = _num(snap.coolant_c), _num(snap.fuel_pct)
+        thr, mp, soc = _num(snap.throttle_pct), _num(snap.map_kpa), _num(snap.cpu_temp_c)
+        # Calm by default: white numerals; colour only on warning/alert (matches
+        # the GAUGES page — green/amber/red are reserved for state, not steady).
+        rpm_col = DANGER if (rpm is not None and rpm >= 7000) else TEXT
+        cool_col = (TEXT if cool is None else
+                    DANGER if cool > 110 else WARN if cool > 100 else TEXT)
+        fuel_col = (TEXT if fuel is None else
+                    DANGER if fuel < 10 else WARN if fuel < 20 else TEXT)
+        soc_col = (TEXT if soc is None else
+                   DANGER if soc > 80 else WARN if soc > 70 else TEXT)
+        return [
+            ("SPEED", None if sp is None else "%d" % round(_disp_speed(sp)),
+             config.speed_label(), None, TEXT, None),
+            ("RPM", None if rpm is None else "%d" % round(rpm), "",
+             None, rpm_col, None),
+            ("GEAR", g if g != "-" else None, "", None, TEXT, None),
+            ("COOLANT", None if cool is None else "%d" % round(_disp_temp(cool)),
+             config.temp_label(), _frac(snap.coolant_c, COOLANT_LO, COOLANT_HI),
+             cool_col, None),
+            ("FUEL", None if fuel is None else "%d" % round(fuel), "%",
+             (fuel / 100.0 if fuel is not None else None), fuel_col, None),
+            ("THROTTLE", None if thr is None else "%d" % round(thr), "%",
+             (thr / 100.0 if thr is not None else None), TEXT, None),
+            ("MAP", None if mp is None else "%d" % round(mp), "kPa",
+             None, TEXT, None if mp is None else "%+.0f vs baro" % (mp - 101.3)),
+            ("SoC", None if soc is None else "%d" % round(_disp_temp(soc)),
+             config.temp_label(),
+             (_frac(soc, 0, 100) if soc is not None else None), soc_col, None),
+        ]
 
     def _chip_strip(self, draw, snap):
         x = self.CHIP_X * SS
@@ -352,9 +363,12 @@ class VehiclePage(Page):
              bool(snap.parking_brake)),
             ("REVERSE", WARN if snap.reverse else TEXT_DIM,
              bool(snap.reverse)),
-            ("SRC " + (snap.source or "?"),
-             OK if snap.source == "LIVE" else TEXT_DIM, False),
         ]
+        # door / trunk surfaced here too (full picture lives on the BODY page).
+        if snap.door_left or snap.door_right:
+            chips.append(("DOOR", DANGER, True))
+        if snap.trunk:
+            chips.append(("TRUNK", DANGER, True))
         for txt, col, filled in chips:
             w, _ = gauges.status_chip(draw, x, y, txt, col, filled=filled,
                                       scale=SS)
@@ -748,43 +762,29 @@ def _glyph_bolt(draw, cx, cy, s):
 class SystemPage(Page):
     name = "SYSTEM"
 
-    # Tile grid (screen px, pre-supersample): 2 cols x 3 rows in the body.
-    TILE_W, TILE_H = 596, 196
-    GRID_X, GRID_Y = 32, 100
-    GAP_X, GAP_Y = 24, 12
+    # 2 columns x 3 rows of vital atoms (screen px, pre-supersample).
+    COL_XS = (56, 664)
+    ROW_YS = (158, 352, 546)        # label baselines
+    VAL_SIZE, BAR_W = 50, 240
 
-    # CPU sparkline area within tile 0 (offsets in screen px).
-    SPARK_X0, SPARK_X1 = 320, 572
-    SPARK_Y0, SPARK_Y1 = 64, 124
+    # CPU sparkline (top-left atom, screen px).
+    SPARK_X0, SPARK_X1 = 360, 600
+    SPARK_Y0, SPARK_Y1 = 176, 232
 
-    _GLYPHS = (_glyph_cpu, _glyph_temp, _glyph_mem, _glyph_disk,
-               _glyph_wifi, _glyph_bolt)
-    _TITLES = ("CPU", "TEMP", "MEM", "DISK /", "NETWORK", "POWER EXT5V")
-
-    def _cells(self):
-        return [(self.GRID_X + c * (self.TILE_W + self.GAP_X),
-                 self.GRID_Y + r * (self.TILE_H + self.GAP_Y))
-                for r in range(3) for c in range(2)]
+    def _slots(self):
+        return [(x, y) for y in self.ROW_YS for x in self.COL_XS]
 
     def render_static(self, draw, img):
-        cells = self._cells()
-        for i, cell in enumerate(cells):
-            x, y = cell[0] * SS, cell[1] * SS
-            w, h = self.TILE_W * SS, self.TILE_H * SS
-            gauges.card(draw, x, y, x + w, y + h, radius=14 * SS, scale=SS)
-            gauges.tracked_text(draw, x + 24 * SS, y + 16 * SS,
-                                self._TITLES[i], font(19 * SS, "bold"),
-                                TEXT_DIM, tracking=2 * SS)
-            self._GLYPHS[i](draw, x + w - 52 * SS, y + 44 * SS, 40 * SS)
-        # Sparkline baseline (CPU tile).
-        x, y = cells[0][0] * SS, cells[0][1] * SS
-        draw.line([(x + self.SPARK_X0 * SS, y + self.SPARK_Y1 * SS),
-                   (x + self.SPARK_X1 * SS, y + self.SPARK_Y1 * SS)],
-                  fill=TICK, width=SS)
+        gauges.tracked_text(draw, 56 * SS, 92 * SS, "SYSTEM",
+                            font(22 * SS, "regular"), TEXT_DIM, tracking=8 * SS)
+        draw.line([(self.SPARK_X0 * SS, self.SPARK_Y1 * SS),
+                   (self.SPARK_X1 * SS, self.SPARK_Y1 * SS)],
+                  fill=mix(theme.BG, TICK, 0.8), width=max(1, SS))
 
     def render(self, draw, img, snap, ctx):
-        cells = self._cells()
+        s = self._slots()
 
+        # CPU + sparkline.
         cpu_pct, load = get_cpu()
         hist = ctx.get("cpu_hist")
         if hist is None:
@@ -792,78 +792,75 @@ class SystemPage(Page):
             ctx["cpu_hist"] = hist
         if cpu_pct is not None:
             hist.append(float(cpu_pct))
-        cpu_v = None if cpu_pct is None else "%d%%" % int(round(cpu_pct))
-        self._tile(draw, cells[0], cpu_v, TEXT,
-                   None if load is None else "load " + load)
-        self._sparkline(draw, cells[0], hist)
+        self._atom(draw, s[0], "CPU",
+                   None if cpu_pct is None else "%d" % round(cpu_pct), "%", TEXT,
+                   frac=(cpu_pct / 100.0 if cpu_pct is not None else None),
+                   sub=None if load is None else "load " + load)
+        self._sparkline(draw, hist)
 
+        # TEMP.
         temp = get_temp_c()
-        tv, tcol = None, TEXT
-        if temp is not None:
-            tv = "%d %s" % (int(round(_disp_temp(temp))), config.temp_label())
-            tcol = DANGER if temp > 80 else (WARN if temp > 70 else OK)
-        self._tile(draw, cells[1], tv, tcol, None)
+        tcol = (TEXT if temp is None else
+                DANGER if temp > 80 else WARN if temp > 70 else TEXT)
+        self._atom(draw, s[1], "TEMP",
+                   None if temp is None else "%d" % round(_disp_temp(temp)),
+                   config.temp_label(), tcol,
+                   frac=(temp / 100.0 if temp is not None else None))
 
+        # MEMORY.
         mem = get_mem()
-        mv = msub = None
-        if mem is not None:
-            mv = "%.1f GB" % mem[0]
-            msub = "of %.1f GB used" % mem[1]
-        self._tile(draw, cells[2], mv, TEXT, msub)
+        self._atom(draw, s[2], "MEMORY", None if mem is None else "%.1f" % mem[0],
+                   "GB", TEXT, frac=(mem[0] / mem[1] if mem and mem[1] else None),
+                   sub=None if mem is None else "of %.1f GB" % mem[1])
 
+        # DISK.
         disk = get_disk()
-        dv = dsub = None
-        if disk is not None:
-            dv = "%d%%" % int(round(disk[2]))
-            dsub = "%.0f / %.0f GB used" % (disk[0], disk[1])
-        self._tile(draw, cells[3], dv, TEXT, dsub)
+        self._atom(draw, s[3], "DISK /",
+                   None if disk is None else "%d" % round(disk[2]), "%", TEXT,
+                   frac=(disk[2] / 100.0 if disk is not None else None),
+                   sub=None if disk is None else "%.0f / %.0f GB" % (disk[0], disk[1]))
 
+        # NETWORK.
         ssid, ips = get_net()
-        nv = (ssid or "--")[:14]
-        nsub = "TS %s   %s" % (snap.tailscale or "?", ips or "--")
-        self._tile(draw, cells[4], nv, TEXT, nsub)
+        self._atom(draw, s[4], "NETWORK", (ssid or "--")[:14], "", TEXT,
+                   sub="TS %s   %s" % (snap.tailscale or "?", ips or "--"))
 
+        # POWER (ext 5V rail + UPS, best-effort; badges carry AC / battery / state).
         volts = get_ext5v()
-        pv, pcol = None, TEXT
-        if volts is not None:
-            pv = "%.2f V" % volts
-            pcol = DANGER if volts < 4.8 else (WARN if volts < 4.95 else OK)
-
-        # UPS telemetry (best-effort, never raises). Surface state + AC/batt
-        # info in the POWER tile so the SYSTEM page shows the power-safety net
-        # that is already running (even while the daemon is disarmed).
+        pcol = (TEXT if volts is None else
+                DANGER if volts < 4.8 else WARN if volts < 4.95 else TEXT)
         ups = ctx.get("ups")
         if ups is None:
             ups = UpsClient()
             ctx["ups"] = ups
         ust = ups.status()
-        ubadges = list(self._power_badges())
-        usub = None
+        badges = list(self._power_badges())
         if not ups.offline(ust):
-            st = str(ust.get("state") or "ONLINE").upper()
-            ac = ust.get("ac_present")
-            bp = ust.get("battery_pct")
+            ac, bp = ust.get("ac_present"), ust.get("battery_pct")
             if ac is True:
-                ubadges.append(("AC", OK))
+                badges.append(("AC", OK))
             elif ac is False:
-                ubadges.append(("BAT", WARN))
+                badges.append(("BAT", WARN))
             if bp is not None:
                 try:
-                    ubadges.append(("%d%%" % int(round(float(bp))), TEXT_DIM))
+                    badges.append(("%d%%" % int(round(float(bp))), TEXT_DIM))
                 except Exception:
                     pass
-            # Compact sub for the tile bottom (falls back to throttled badges only)
-            usub = "UPS %s" % st[:6]
-        self._tile(draw, cells[5], pv, pcol, usub,
-                   badges=ubadges)
+        self._atom(draw, s[5], "POWER EXT5V",
+                   None if volts is None else "%.2f" % volts, "V", pcol)
+        self._power_chiprow(draw, s[5], badges)
 
-    def _sparkline(self, draw, cell, hist):
-        """Last 60 CPU samples as a cheap accent polyline."""
+    def _atom(self, draw, slot, label, value, unit, color, frac=None, sub=None):
+        gauges.vital_atom(draw, slot[0] * SS, slot[1] * SS, label, value, unit,
+                          color, frac=frac, sub=sub, scale=SS,
+                          value_size=self.VAL_SIZE, bar_w=self.BAR_W)
+
+    def _sparkline(self, draw, hist):
+        """Last 60 CPU samples as a cheap accent polyline (top-left atom)."""
         if not hist or len(hist) < 2:
             return
-        x = (cell[0] + self.SPARK_X0) * SS
-        y0 = (cell[1] + self.SPARK_Y0) * SS
-        y1 = (cell[1] + self.SPARK_Y1) * SS
+        x = self.SPARK_X0 * SS
+        y0, y1 = self.SPARK_Y0 * SS, self.SPARK_Y1 * SS
         w = (self.SPARK_X1 - self.SPARK_X0) * SS
         n = hist.maxlen or 60
         step = w / float(max(1, n - 1))
@@ -872,10 +869,16 @@ class SystemPage(Page):
             v = max(0.0, min(100.0, float(v)))
             pts.append((x + i * step, y1 - (y1 - y0) * v / 100.0))
         draw.line(pts, fill=ACCENT, width=2 * SS)
-        # Brighter dot on the newest sample.
         px, py = pts[-1]
         r = 4 * SS
         draw.ellipse([px - r, py - r, px + r, py + r], fill=ACCENT_GLOW)
+
+    def _power_chiprow(self, draw, slot, badges):
+        bx = slot[0] * SS
+        by = (slot[1] + 98) * SS
+        for txt, col in (badges or []):
+            bw, _ = gauges.status_chip(draw, bx, by, txt, col, scale=SS)
+            bx += bw + 12 * SS
 
     @staticmethod
     def _power_badges():
@@ -892,22 +895,6 @@ class SystemPage(Page):
         if not out:
             out.append(("OK", OK))
         return out
-
-    def _tile(self, draw, cell, value, vcol, sub, badges=None):
-        """Dynamic tile content (card chrome + title live in the static
-        layer; see render_static)."""
-        x, y = cell[0] * SS, cell[1] * SS
-        vt = "--" if value is None else str(value)
-        draw.text((x + 24 * SS, y + 52 * SS), vt,
-                  font=font(46 * SS, "mono"), fill=vcol or TEXT)
-        if sub:
-            draw.text((x + 24 * SS, y + 138 * SS), str(sub),
-                      font=font(19 * SS, "regular"), fill=TEXT_DIM)
-        bx = x + 24 * SS
-        for txt, col in (badges or []):
-            bw, _ = gauges.status_chip(draw, bx, y + 128 * SS, txt, col,
-                                       scale=SS)
-            bx += bw + 12 * SS
 
 
 # --------------------------------------------------------------------------- #
@@ -1421,12 +1408,72 @@ class AIVisionPage(Page):
 
 
 # --------------------------------------------------------------------------- #
+# Page: BODY — top-down line-art MX-5 with door / trunk / blind-spot status
+# --------------------------------------------------------------------------- #
+class BodyView(Page):
+    """Calm top-down body view in the Tesla language: a hairline MX-5 with open
+    panels (driver/passenger door, trunk) lit in red and a blind-spot arc on
+    any active side. Roof state shown as a small badge. No takeover, no spin."""
+
+    name = "BODY"
+
+    def render_static(self, draw, img):
+        gauges.tracked_text(draw, 40 * SS, 84 * SS, "BODY",
+                            font(26 * SS, "bold"), TEXT, tracking=8 * SS)
+        gauges.tracked_text(draw, 40 * SS, 116 * SS, "ND1 MX-5 RF",
+                            font(14 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
+
+    def render(self, draw, img, snap, ctx):
+        from . import bodycar
+        bodycar.draw_car(img, draw, snap, SS, cx=img.width // 2,
+                         cy=int(402 * SS), car_len=536)
+        self._roof_badge(draw, snap)
+        self._caption(draw, snap)
+
+    @staticmethod
+    def _roof_badge(draw, snap):
+        roof = snap.roof or "-"
+        col = OK if roof == "CLOSED" else (TEXT_DIM if roof == "-" else WARN)
+        gauges.tracked_text(draw, 1240 * SS, 90 * SS, "ROOF",
+                            font(13 * SS, "regular"), TEXT_DIM, tracking=4 * SS,
+                            anchor="ra")
+        gauges.tracked_text(draw, 1240 * SS, 116 * SS,
+                            ("--" if roof == "-" else roof),
+                            font(20 * SS, "regular"), col, tracking=2 * SS,
+                            anchor="ra")
+
+    @staticmethod
+    def _caption(draw, snap):
+        opens = []
+        if snap.door_left:
+            opens.append("Driver door")
+        if snap.door_right:
+            opens.append("Passenger door")
+        if snap.trunk:
+            opens.append("Trunk")
+        if opens:
+            msg, col = "  ·  ".join(opens) + " open", DANGER
+        else:
+            msg, col = "ALL CLOSED", mix(theme.BG, TEXT_DIM, 0.3)
+        gauges.tracked_text_center(draw, SW // 2, 690 * SS, msg,
+                                   font(23 * SS, "regular"), col, tracking=3 * SS)
+        if snap.bsm_left or snap.bsm_right:
+            side = "Both sides" if (snap.bsm_left and snap.bsm_right) else (
+                "Left" if snap.bsm_left else "Right")
+            gauges.tracked_text_center(draw, SW // 2, 718 * SS,
+                                       "VEHICLE IN BLIND SPOT · " + side.upper(),
+                                       font(14 * SS, "bold"), DANGER,
+                                       tracking=2 * SS)
+
+
+# --------------------------------------------------------------------------- #
 # factories
 # --------------------------------------------------------------------------- #
 def make_pages() -> list:
     from .settings import SettingsPage  # function-level: no import cycle
-    # Visible swipe rotation: GAUGES, VEHICLE, SYSTEM, CONFIGURE[, AI VISION].
-    pages = [GaugesPage(), VehiclePage(), SystemPage(), SettingsPage()]
+    # Visible swipe rotation: GAUGES, VEHICLE, BODY, SYSTEM, CONFIGURE[, AI].
+    pages = [GaugesPage(), VehiclePage(), BodyView(), SystemPage(),
+             SettingsPage()]
     # Vision page appended to the visible rotation if it constructs.
     try:
         vision = AIVisionPage()
