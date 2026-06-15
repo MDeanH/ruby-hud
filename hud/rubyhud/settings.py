@@ -144,34 +144,15 @@ class SettingsPage(TouchMenu):
     def _recording_value():
         return "REC" if recorder.any_active() else "off"
 
-    # -- AI vision service on/off -------------------------------------------- #
-    _vision_status = {"t": 0.0, "v": "--"}
-
-    def _vision_value(self):
-        # Cached so the per-frame value_fn never shells out every frame.
-        from .signals import _run
-        now = time.monotonic()
-        c = self._vision_status
-        if now - c["t"] >= 2.5:
-            out = _run(["systemctl", "is-active", "rubyvision"], timeout=2.0)
-            c["v"] = "ON" if (out or "").strip() == "active" else "off"
-            c["t"] = now
-        return c["v"]
+    # -- AI vision service on/off (shared with the AI VISION page) ------------ #
+    @staticmethod
+    def _vision_value():
+        from . import visionctl
+        return visionctl.status_label()
 
     def _toggle_vision(self, ctx):
-        # Fire-and-forget via sudo (passwordless drop-in installed for these
-        # systemctl verbs) so the render thread never blocks on the unit op.
-        import subprocess
-        from .signals import _run
-        out = _run(["systemctl", "is-active", "rubyvision"], timeout=2.0)
-        action = "stop" if (out or "").strip() == "active" else "start"
-        try:
-            subprocess.Popen(
-                ["sudo", "-n", "/usr/bin/systemctl", action, "rubyvision"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-        self._vision_status["t"] = 0.0   # refresh status on the next frame
+        from . import visionctl
+        visionctl.toggle()
 
     def _recording_items(self) -> list:
         return [

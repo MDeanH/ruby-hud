@@ -1141,6 +1141,9 @@ class AIVisionPage(Page):
     SIDE_X0 = 880
     SIDE_X1 = 1248
 
+    # On-page power button (top-right): toggles the rubyvision service on/off.
+    PWR_X0, PWR_Y0, PWR_X1, PWR_Y1 = 1058, 70, 1248, 110
+
     # Bottom chip strip (model / source / fps / temp / state).
     CHIP_Y = 590
     CHIP_X = 40
@@ -1186,6 +1189,9 @@ class AIVisionPage(Page):
 
     # ---- dynamic ---------------------------------------------------------
     def render(self, draw, img, snap, ctx):
+        # On-page power toggle, drawn first so it shows in both live + offline
+        # states (the offline card never reaches the top-right header).
+        self._draw_power(draw)
         vc = ctx.get("vision")
         if vc is None:
             vc = VisionClient()
@@ -1215,6 +1221,19 @@ class AIVisionPage(Page):
 
         self._chip_strip(draw, st, state, mode, source)
         self._detection_list(draw, dets)
+
+    def _draw_power(self, draw):
+        """Top-right on/off button for the rubyvision service (live + offline)."""
+        from . import visionctl
+        on = visionctl.is_active()
+        col = OK if on else DANGER
+        x0, y0 = self.PWR_X0 * SS, self.PWR_Y0 * SS
+        x1, y1 = self.PWR_X1 * SS, self.PWR_Y1 * SS
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=10 * SS,
+                               fill=mix(BG, col, 0.18), outline=col, width=2 * SS)
+        gauges._centered_text(draw, (x0 + x1) // 2, (y0 + y1) // 2,
+                              "VISION  ON" if on else "VISION  OFF",
+                              font(20 * SS, "bold"), col)
 
     # -- preview paste -----------------------------------------------------
     def _paste_preview(self, img, vc, st):
@@ -1376,6 +1395,12 @@ class AIVisionPage(Page):
 
     # ---- input -----------------------------------------------------------
     def handle_tap(self, x, y, ctx):
+        # Power button (top-right): toggle the rubyvision service on/off.
+        if (self.PWR_X0 <= x <= self.PWR_X1
+                and self.PWR_Y0 <= y <= self.PWR_Y1):
+            from . import visionctl
+            visionctl.toggle()
+            return True
         vc = ctx.get("vision")
         if vc is None:
             vc = VisionClient()
