@@ -169,6 +169,19 @@ class Pipeline:
         if self.mode == "stub":
             self.detector = detector.StubDetector(src)
 
+    def _set_source(self, kind):
+        """Open a specific source kind live (CONFIGURE camera selector)."""
+        if not kind:
+            return
+        src, real_kind = sources.open_source(kind, self.models_dir)
+        self.capture.swap_source(src, real_kind)
+        # Keep the cycle index aligned so a later cycle_source continues sanely.
+        base = "".join(c for c in real_kind if not c.isdigit())  # usb8 -> usb
+        if base in self._src_cycle:
+            self._src_cycle_idx = self._src_cycle.index(base)
+        if self.mode == "stub":
+            self.detector = detector.StubDetector(src)
+
     def _cycle_model(self):
         if len(self._models) <= 1:
             return  # only the stub available
@@ -206,6 +219,11 @@ class Pipeline:
         elif action == "cycle_model":
             try:
                 self._cycle_model()
+            except Exception:
+                pass
+        elif action == "set_source":
+            try:
+                self._set_source(cmd.get("source"))
             except Exception:
                 pass
 

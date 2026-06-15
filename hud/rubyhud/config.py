@@ -17,6 +17,7 @@ import threading
 _DEFAULTS = {
     "temp_unit": "F",      # "F" | "C"
     "speed_unit": "MPH",   # "MPH" | "KMH"
+    "vision_source": "usb",  # "usb" | "csi" — AI-vision camera (rubyvision)
 }
 
 _PATH = os.environ.get(
@@ -94,6 +95,26 @@ def toggle_temp_unit() -> None:
 
 def toggle_speed_unit() -> None:
     set("speed_unit", "KMH" if speed_unit() == "MPH" else "MPH")
+
+
+# --------------------------------------------------------------------------- #
+# AI-vision camera selection. Persisted here; rubyvision reads this same JSON at
+# startup (sources._saved_source_pref) and the HUD live-switches the running
+# pipeline via a cmd (visionctl.set_source).
+# --------------------------------------------------------------------------- #
+def vision_source() -> str:
+    v = get("vision_source", "usb")
+    return v if v in ("usb", "csi") else "usb"
+
+
+def vision_source_label() -> str:
+    return "CSI" if vision_source() == "csi" else "USB"
+
+
+def cycle_vision_source() -> str:
+    nxt = "csi" if vision_source() == "usb" else "usb"
+    set("vision_source", nxt)
+    return nxt
 
 
 def c_to_disp(c: float) -> float:

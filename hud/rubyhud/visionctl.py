@@ -9,6 +9,8 @@ on the unit operation. Never raises.
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import time
 
@@ -16,6 +18,9 @@ from .signals import _run
 
 _TTL = 2.5
 _status = {"t": 0.0, "active": False}
+
+_VISION_DIR = os.environ.get("RUBYVISION_SHM", "/dev/shm/rubyvision")
+_cmd_seq = {"n": 0}
 
 
 def is_active() -> bool:
@@ -44,3 +49,21 @@ def toggle() -> None:
 
 def status_label() -> str:
     return "ON" if is_active() else "off"
+
+
+def set_source(name: str) -> None:
+    """Live-switch the running rubyvision pipeline's camera by writing cmd.json
+    (mtime-gated, so the pipeline consumes it once). The persistent choice lives
+    in config.vision_source(); this only applies it to the running process and
+    is a no-op if vision is off / the shm dir is missing. Never raises."""
+    try:
+        _cmd_seq["n"] += 1
+        os.makedirs(_VISION_DIR, exist_ok=True)
+        path = os.path.join(_VISION_DIR, "cmd.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"seq": _cmd_seq["n"], "cmd": "set_source",
+                       "source": name}, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass

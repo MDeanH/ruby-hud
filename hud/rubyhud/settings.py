@@ -124,6 +124,8 @@ class SettingsPage(TouchMenu):
                      submenu=self._recording_items),
             MenuItem("AI VISION", value_fn=self._vision_value,
                      on_tap=self._toggle_vision),
+            MenuItem("VISION CAMERA", value_fn=config.vision_source_label,
+                     on_tap=self._cycle_vision_camera),
             MenuItem("CAN BUS",
                      on_tap=lambda ctx: ctx.__setitem__("nav_request", "CAN BUS")),
             # Subsystems with hardware/feasibility prerequisites: surfaced as
@@ -153,6 +155,14 @@ class SettingsPage(TouchMenu):
     def _toggle_vision(self, ctx):
         from . import visionctl
         visionctl.toggle()
+
+    @staticmethod
+    def _cycle_vision_camera(ctx):
+        # Persist the choice (honoured by rubyvision at startup) AND live-switch
+        # the running pipeline so the change is immediate.
+        from . import visionctl
+        config.cycle_vision_source()
+        visionctl.set_source(config.vision_source())
 
     def _recording_items(self) -> list:
         return [

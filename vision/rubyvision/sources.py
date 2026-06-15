@@ -303,6 +303,20 @@ class UvcSource:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except Exception:
                 pass
+            # A UVC device exposes a capture node AND a metadata node; the latter
+            # opens but never yields a frame. Warm up + verify a real frame so we
+            # never commit to a dead node (the caller then tries the next one).
+            ok = False
+            for _ in range(15):
+                r, fr = cap.read()
+                if r and fr is not None:
+                    ok = True
+                    break
+                time.sleep(0.03)
+            if not ok:
+                cap.release()
+                raise SourceUnavailable("video%d opened but no frames"
+                                        % self._idx)
             self._cap = cap
         except SourceUnavailable:
             raise
@@ -382,20 +396,20 @@ class VideoSource:
 SOURCE_CYCLE = ("usb", "csi", "video", "pattern")
 
 
-def _find_usb_index():
-    """Index of the USB/UVC webcam's capture node, or None.
-
-    A naive 'lowest /dev/video*' picks video0 -- which on a Pi 5 is the CSI
-    (rp1-cfe) node, not a webcam. So qualify on the backing driver: only a node
-    served by uvcvideo (a real USB webcam) counts; CSI (rp1-cfe/unicam) and ISP
-    (pispbe) nodes are skipped. Lowest qualifying index = UVC's capture node
-    (its metadata node has the higher index)."""
+def _usb_indices():
+    """Ascending list of USB/UVC video-node indices (capture node precedes its
+    metadata node). A naive 'lowest /dev/video*' picks video0 -- which on a Pi 5
+    is the CSI (rp1-cfe) node, not a webcam -- so qualify on the backing driver:
+    only nodes served by uvcvideo count; CSI (rp1-cfe/unicam) and ISP (pispbe)
+    nodes are skipped. The caller tries them in order until one yields frames,
+    so a metadata node never gets used."""
     def _idx(node):
         try:
             return int(node[len("/dev/video"):])
         except ValueError:
             return 1 << 30
 
+    out = []
     for node in sorted(glob.glob("/dev/video[0-9]*"), key=_idx):
         i = _idx(node)
         if i == 1 << 30:
@@ -407,8 +421,8 @@ def _find_usb_index():
         except Exception:
             continue
         if driver == "uvcvideo" or "/usb" in link:
-            return i
-    return None
+            out.append(i)
+    return out
 
 
 def _find_demo(model_dir: str):
@@ -435,10 +449,16 @@ def _open_one(kind: str, model_dir: str):
     if kind == "csi":
         return CsiSource()
     if kind == "usb":
-        idx = _find_usb_index()
-        if idx is None:
-            raise SourceUnavailable("no /dev/video* node")
-        return UvcSource(idx)
+        idxs = _usb_indices()
+        if not idxs:
+            raise SourceUnavailable("no USB/UVC video node")
+        last = None
+        for i in idxs:                       # capture node first; skip dead ones
+            try:
+                return UvcSource(i)
+            except SourceUnavailable as exc:
+                last = exc
+        raise last or SourceUnavailable("no usable USB camera")
     if kind == "video":
         demo = _find_demo(model_dir)
         if not demo:
@@ -449,16 +469,38 @@ def _open_one(kind: str, model_dir: str):
     raise SourceUnavailable("unknown source kind %r" % kind)
 
 
+def _saved_source_pref():
+    """The user's saved AI-vision camera choice from the shared rubyhud config
+    (the same JSON rubyhud writes), or None. Read directly so this module stays
+    decoupled from the rubyhud package. Honoured when --source is 'auto'."""
+    import json
+    path = os.environ.get(
+        "RUBYHUD_CONFIG",
+        os.path.join(os.path.expanduser("~"), "hud-state",
+                     "rubyhud-config.json"))
+    try:
+        with open(path) as fh:
+            v = json.load(fh).get("vision_source")
+    except Exception:
+        return None
+    return v if v in ("usb", "csi", "video", "pattern") else None
+
+
 def open_source(pref: str = "auto", model_dir: str = ""):
     """Open a source. Returns (source, kind).
 
-    pref="auto" tries csi -> usb -> video -> pattern, each guarded; a specific
-    kind tries only that kind but still falls back to pattern on failure so the
-    pipeline always has a frame producer.
+    pref="auto" honours the saved vision_source (CONFIGURE camera selector),
+    then falls back through the rest of SOURCE_CYCLE (usb -> csi -> video ->
+    pattern), each guarded. A specific kind tries only that kind first but still
+    falls back so the pipeline always has a frame producer.
     """
     pref = (pref or "auto").lower()
     if pref == "auto":
-        order = SOURCE_CYCLE
+        saved = _saved_source_pref()
+        if saved:
+            order = (saved,) + tuple(k for k in SOURCE_CYCLE if k != saved)
+        else:
+            order = SOURCE_CYCLE
     else:
         # Try the requested kind first, then the rest of the cycle.
         rest = tuple(k for k in SOURCE_CYCLE if k != pref)
