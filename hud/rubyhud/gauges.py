@@ -144,6 +144,48 @@ def arc_glow(img, cx, cy, r, a0, a1, color, width, blur):
     img.paste(spr, (int(cx - r - pad), int(cy - r - pad)), spr)
 
 
+def vital_atom(draw, x, label_y, label, value, unit, color, frac=None, sub=None,
+               scale=1, value_size=58, bar_w=180):
+    """One Tesla 'vital': a dim caps label, a big hairline value with a dim unit,
+    and either a thin progress bar (when `frac` is given) or a dim sub-line.
+
+    Left-aligned at x; `label_y` is the label baseline. Sizes are screen px
+    (caller passes its supersample as `scale`). The shared building block of the
+    GAUGES / VEHICLE / SYSTEM pages. Never raises on a None value ('--')."""
+    S = scale
+    lf = font(int(14 * S), "regular")
+    tracked_text(draw, x, label_y, str(label), lf, mix(BG, TEXT_DIM, 0.6),
+                 tracking=int(3 * S), anchor="ls")
+    vy = label_y + int((value_size + 10) * S)
+    vf = font(int(value_size * S), "thin")
+    s = "--" if value is None else str(value)
+    try:
+        draw.text((x, vy), s, font=vf, fill=color, anchor="ls")
+    except Exception:
+        draw.text((x, vy - int(value_size * S)), s, font=vf, fill=color)
+    try:
+        w = draw.textlength(s, font=vf)
+    except Exception:
+        w = len(s) * value_size * 0.6 * S
+    if unit:
+        uf = font(int(value_size * 0.42 * S), "regular")
+        draw.text((x + w + int(7 * S), vy), str(unit), font=uf, fill=TEXT_DIM,
+                  anchor="ls")
+    by = vy + int(13 * S)
+    if frac is not None:
+        draw.rounded_rectangle([x, by, x + int(bar_w * S), by + int(3 * S)],
+                               radius=int(1.5 * S), fill=mix(BG, TICK, 0.85))
+        fw = int(max(0.0, min(1.0, frac)) * bar_w * S)
+        if fw > 0:
+            bc = color if color in (WARN, DANGER) else mix(TEXT_DIM, TEXT, 0.25)
+            draw.rounded_rectangle([x, by, x + fw, by + int(3 * S)],
+                                   radius=int(1.5 * S), fill=bc)
+    if sub:
+        sub_y = by + int(22 * S) if frac is not None else by + int(13 * S)
+        draw.text((x, sub_y), str(sub), font=font(int(15 * S), "regular"),
+                  fill=TEXT_DIM, anchor="ls")
+
+
 # Sweep constants for the dial / arc_gauge: 270deg from 135 to 405.
 _ARC_START = 135.0
 _ARC_END = 405.0
