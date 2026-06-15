@@ -50,6 +50,13 @@ class Snapshot:
     headlight: str = "off"            # 'off'|'TNS'|'TNS_LO'|'HI'
     parking_brake: bool = False
     reverse: bool = False
+    # ---- body / safety indicators (0x43E doors+trunk, 0x47B BSM) -----------
+    door_left: bool = False     # driver-side door ajar (DBC DoorLeft)
+    door_right: bool = False    # passenger-side door ajar (DBC DoorRight)
+    trunk: bool = False         # trunk/boot open (DBC Trunk)
+    bsm_left: bool = False      # vehicle in left blind spot (DBC BSM_Left)
+    bsm_right: bool = False     # vehicle in right blind spot (DBC BSM_Right)
+    bsm_warning: bool = False   # escalated BSM warning flag (DBC BSM_Warning)
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +80,8 @@ MX5_ID_PCM2 = 0xFD   # MT_Gear_Actual @bit19 len3; MAP @b7 (kPa, +2 offset)
 MX5_ID_BCMM = 0x9A   # Turn @bit19 len2 (1=L,2=R,3=LR); Headlight @bit7 len4
 MX5_ID_IC   = 0x9F   # Parking_Brake @bit4; Reverse_Flag @bit7
 MX5_ID_ROOF = 0x472  # RoofGraphicStatus @bit23 len4 (RF retractable hardtop)
+MX5_ID_DOORS = 0x43E  # HS_BCMM (1086): DoorLeft@36, DoorRight@37, Trunk@47 (1-bit)
+MX5_ID_BSM  = 0x47B   # HS_IC (1147): BSM_Right@1, BSM_Warning@2, BSM_Left@15 (1-bit)
 
 # Motorola/big-endian @0+ value tables from the DBC.
 _TURN_MAP = {0: "off", 1: "L", 2: "R", 3: "LR"}
@@ -222,6 +231,12 @@ class DataLayer:
         self._ambient_c: float | None = None
         self._map_kpa: float | None = None
         self._roof: str = "-"
+        self._door_left: bool = False
+        self._door_right: bool = False
+        self._trunk: bool = False
+        self._bsm_left: bool = False
+        self._bsm_right: bool = False
+        self._bsm_warning: bool = False
         self._turn: str = "off"
         self._headlight: str = "off"
         self._parking_brake: bool = False
@@ -441,6 +456,32 @@ class DataLayer:
                 self._roof = "CLOSED"
             elif data[1] == 0x03:
                 self._roof = "OPEN"
+        # ---- 0x43E HS_BCMM: door + trunk ajar (1-bit each, Motorola @0+) -----
+        # VAL_: doors 0=Closed/1=Ajar, trunk 0=Closed/1=Open. L/R-to-physical
+        # mapping confirmed on the car by opening each door (see can/README).
+        elif arb == MX5_ID_DOORS and len(data) >= 6:
+            dl = _moto(data, 36, 1)
+            dr = _moto(data, 37, 1)
+            tk = _moto(data, 47, 1)
+            if dl is not None:
+                self._door_left = bool(dl)
+            if dr is not None:
+                self._door_right = bool(dr)
+            if tk is not None:
+                self._trunk = bool(tk)
+        # ---- 0x47B HS_IC: blind-spot monitor (1-bit each, Motorola @0+) ------
+        # BSM activates >~19 mph with a vehicle in the adjacent lane; bits read
+        # 0 at rest. Positive verification needs a drive test (see can/README).
+        elif arb == MX5_ID_BSM and len(data) >= 2:
+            br = _moto(data, 1, 1)
+            bw = _moto(data, 2, 1)
+            bl = _moto(data, 15, 1)
+            if br is not None:
+                self._bsm_right = bool(br)
+            if bw is not None:
+                self._bsm_warning = bool(bw)
+            if bl is not None:
+                self._bsm_left = bool(bl)
 
     def _record_raw(self, arb, data: bytes, now: float) -> None:
         """Track raw traffic for the CAN page. Caller holds _lock."""
@@ -538,6 +579,8 @@ class DataLayer:
                 headlight = "off"
                 parking_brake = False
                 reverse = False
+                door_left = door_right = trunk = False
+                bsm_left = bsm_right = bsm_warning = False
                 source = "NO DATA"
             else:
                 speed = self._speed_mph
@@ -554,6 +597,12 @@ class DataLayer:
                 headlight = self._headlight
                 parking_brake = self._parking_brake
                 reverse = self._reverse
+                door_left = self._door_left
+                door_right = self._door_right
+                trunk = self._trunk
+                bsm_left = self._bsm_left
+                bsm_right = self._bsm_right
+                bsm_warning = self._bsm_warning
                 source = self._source
             fps = self._fps
             recent = list(self.recent)
@@ -593,6 +642,12 @@ class DataLayer:
             headlight=headlight,
             parking_brake=parking_brake,
             reverse=reverse,
+            door_left=door_left,
+            door_right=door_right,
+            trunk=trunk,
+            bsm_left=bsm_left,
+            bsm_right=bsm_right,
+            bsm_warning=bsm_warning,
         )
 
     # -- demo ------------------------------------------------------------- #
