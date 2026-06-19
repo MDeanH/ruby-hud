@@ -186,7 +186,7 @@ _camera = _Rec("camera")
 
 
 # --------------------------------------------------------------------------- #
-# Module API (used by the CONFIGURE > Recording menu)
+# Module API (used by the MENU > Recording menu)
 # --------------------------------------------------------------------------- #
 def toggle_screen() -> None:
     _screen.stop() if _screen.is_active() else _screen.start()

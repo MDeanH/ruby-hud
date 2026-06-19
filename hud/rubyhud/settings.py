@@ -73,10 +73,10 @@ def _uptime_value():
 
 
 class SettingsPage(TouchMenu):
-    name = "CONFIGURE"
+    name = "MENU"
 
     def __init__(self):
-        super().__init__("CONFIGURE", self._root_items())
+        super().__init__("MENU", self._root_items())
         self._check_wall = None   # wall time of our last check request
         self._flow_wall = None    # wall time of our apply/rollback request
         self._result_seen = None  # status ts of a dismissed result banner
@@ -102,9 +102,88 @@ class SettingsPage(TouchMenu):
 
     # -- items ---------------------------------------------------------------- #
     def _root_items(self) -> list:
-        # Update controls stay at the TOP (used every release); the new config
-        # items follow; about/satellite/service at the end. CAN BUS / PLAYBACK
-        # are hidden pages reached via deep-link.
+        # Topic-grouped root: six buckets ordered by how often a driver touches
+        # each area, so EVERY screen fits with no scrolling (TouchMenu shows 7
+        # rows; a submenu pins a BACK row -> 6 usable). CAN BUS stays a direct
+        # root deep-link (no wrapper screen). See _driving/_connections/etc.
+        # CAMERA & AI when AI vision is enabled; RECORDING (screen/camera
+        # capture only) on hardware without it -- the Pi-4 windshield unit.
+        if config.ai_vision():
+            media = MenuItem("CAMERA & AI", submenu=self._camera_items)
+        else:
+            media = MenuItem("RECORDING", value_fn=self._recording_value,
+                             submenu=self._recording_items)
+        return [
+            MenuItem("DRIVING", submenu=self._driving_items),
+            MenuItem("CONNECTIONS", submenu=self._connections_items),
+            media,
+            MenuItem("HUD", submenu=self._hud_items),
+            MenuItem("CAN BUS",
+                     on_tap=lambda ctx: ctx.__setitem__("nav_request", "CAN BUS")),
+            MenuItem("SYSTEM", submenu=self._system_items),
+        ]
+
+    # -- topic buckets -------------------------------------------------------- #
+    def _driving_items(self) -> list:
+        # Most-tweaked-while-driving settings, one tap from root. SHIFT LIGHT
+        # lives here (where a driver looks for a tach/shift setting).
+        return [
+            MenuItem("TEMPERATURE", value_fn=config.temp_label,
+                     on_tap=lambda ctx: config.toggle_temp_unit()),
+            MenuItem("SPEED UNITS", value_fn=config.speed_label,
+                     on_tap=lambda ctx: config.toggle_speed_unit()),
+            MenuItem("SHIFT LIGHT", value_fn=self._shift_value,
+                     submenu=self._shift_items),
+        ]
+
+    @staticmethod
+    def _shift_value():
+        # Glance value on the DRIVING row: the threshold, or "off".
+        return "%d" % config.shift_rpm() if config.shift_enabled() else "off"
+
+    @staticmethod
+    def _shift_items() -> list:
+        # Amber shift light on the 4" satellite (config.* read by satframe).
+        return [
+            MenuItem("ENABLE",
+                     value_fn=lambda: "on" if config.shift_enabled() else "off",
+                     on_tap=lambda ctx: config.toggle_shift_enabled()),
+            MenuItem("RPM THRESHOLD",
+                     value_fn=lambda: "%d RPM" % config.shift_rpm()),
+            MenuItem("RAISE  +250",
+                     on_tap=lambda ctx: config.adjust_shift_rpm(config.SHIFT_STEP)),
+            MenuItem("LOWER  -250",
+                     on_tap=lambda ctx: config.adjust_shift_rpm(-config.SHIFT_STEP)),
+        ]
+
+    def _connections_items(self) -> list:
+        return [
+            MenuItem("WI-FI", submenu=self._wifi_items),
+            MenuItem("BLUETOOTH", value_fn=self._bt_value,
+                     submenu=self._bt_items),
+            # Honest 'planned' placeholders (dimmed) until each is built out.
+            MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
+                     enabled_fn=lambda: False),
+            MenuItem("CARPLAY", value_fn=lambda: "planned",
+                     enabled_fn=lambda: False),
+        ]
+
+    def _camera_items(self) -> list:
+        return [
+            MenuItem("AI VISION", value_fn=self._vision_value,
+                     on_tap=self._toggle_vision),
+            MenuItem("RESTART CAMERA", on_tap=self._restart_camera),
+            MenuItem("RECORDING", value_fn=self._recording_value,
+                     submenu=self._recording_items),
+        ]
+
+    def _restart_camera(self, ctx):
+        # Re-detect + re-open the camera (for swapping cameras / a wedged feed).
+        from . import visionctl
+        visionctl.restart()
+
+    def _system_items(self) -> list:
+        # Infrequent software-lifecycle + service admin, sunk one level.
         return [
             MenuItem("CHECK FOR UPDATES", value_fn=self._check_value,
                      on_tap=self._do_check),
@@ -115,28 +194,10 @@ class SettingsPage(TouchMenu):
                      enabled_fn=lambda: updates.previous_version() is not None,
                      confirm=self._confirm_rollback, danger=True,
                      on_tap=self._do_rollback),
-            MenuItem("TEMPERATURE", value_fn=config.temp_label,
-                     on_tap=lambda ctx: config.toggle_temp_unit()),
-            MenuItem("SPEED UNITS", value_fn=config.speed_label,
-                     on_tap=lambda ctx: config.toggle_speed_unit()),
-            MenuItem("WI-FI", submenu=self._wifi_items),
-            MenuItem("RECORDING", value_fn=self._recording_value,
-                     submenu=self._recording_items),
-            MenuItem("AI VISION", value_fn=self._vision_value,
-                     on_tap=self._toggle_vision),
-            MenuItem("CAN BUS",
-                     on_tap=lambda ctx: ctx.__setitem__("nav_request", "CAN BUS")),
-            # Subsystems with hardware/feasibility prerequisites: surfaced as
-            # honest 'planned' entries (dimmed) until each is built out.
-            # (NAVIGATION dropped — CarPlay provides nav off the phone.)
-            MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
-                     enabled_fn=lambda: False),
-            MenuItem("BLUETOOTH", value_fn=self._bt_value,
-                     submenu=self._bt_items),
-            MenuItem("CARPLAY", value_fn=lambda: "planned",
-                     enabled_fn=lambda: False),
+            MenuItem("REBOOT", danger=True,
+                     confirm="Reboot the Pi now?",
+                     on_tap=lambda ctx: self._req("reboot")),
             MenuItem("VERSION / ABOUT", submenu=self._about_items),
-            MenuItem("SATELLITE", submenu=self._satellite_items),
             MenuItem("SERVICE", submenu=self._service_items),
         ]
 
@@ -239,7 +300,7 @@ class SettingsPage(TouchMenu):
 
     @staticmethod
     def _bt_value() -> str:
-        # Compact status for the CONFIGURE row. btnet caches devices(), so this
+        # Compact status for the MENU row. btnet caches devices(), so this
         # only reads in-memory state -- safe to call every frame.
         from . import btnet
         try:
@@ -286,49 +347,20 @@ class SettingsPage(TouchMenu):
                                                         "BLUETOOTH")),
         ]
 
-    # -- satellite (4" dash HUD) control ------------------------------------- #
-    _SAT_CTL = "/dev/shm/rubysat-ctl.json"
-    _sat_seq = [0]
-
-    def _sat_send(self, cmd: str):
-        """Atomic write rubysat picks up and rides to the Qualia. Never raises."""
-        try:
-            import json as _json
-            import tempfile as _tf
-            self._sat_seq[0] += 1
-            payload = _json.dumps({"seq": self._sat_seq[0], "cmd": cmd,
-                                   "ts": round(time.time(), 3)})
-            d = os.path.dirname(self._SAT_CTL)
-            fd, tmp = _tf.mkstemp(prefix=".sct-", dir=d)
-            try:
-                os.write(fd, payload.encode("ascii"))
-            finally:
-                os.close(fd)
-            os.replace(tmp, self._SAT_CTL)
-        except Exception:
-            pass
-
-    def _satellite_items(self) -> list:
+    def _hud_items(self) -> list:
+        # The 4" windshield HUD. It's a thin client now: the Pi renders satframe
+        # and streams JPEG frames, so orientation is applied Pi-side via config
+        # (satframe._orient) and carried to the satellite-renderer process by the
+        # cross-process config reload. MIRROR flips the frame horizontally so it
+        # reads correctly when reflected off the windshield (the glass mirrors it
+        # back); ROTATE 180 covers an inverted mount.
         return [
-            MenuItem("HUD MIRROR",
-                     on_tap=lambda ctx: self._sat_send("mirror_toggle")),
-            MenuItem("SHOW GAUGES",
-                     on_tap=lambda ctx: self._sat_send("sat_page0")),
-            MenuItem("SHOW STATUS",
-                     on_tap=lambda ctx: self._sat_send("sat_page1")),
-            MenuItem("SHOW MENU",
-                     on_tap=lambda ctx: self._sat_send("sat_page2")),
-            MenuItem("< PREV PAGE",
-                     on_tap=lambda ctx: self._sat_send("sat_prev")),
-            MenuItem("NEXT PAGE >",
-                     on_tap=lambda ctx: self._sat_send("sat_next")),
+            MenuItem("MIRROR",
+                     value_fn=lambda: "on" if config.sat_mirror() else "off",
+                     on_tap=lambda ctx: config.toggle_sat_mirror()),
             MenuItem("ROTATE 180",
-                     on_tap=lambda ctx: self._sat_send("rot_toggle")),
-            MenuItem("BACKLIGHT OFF", danger=True,
-                     confirm="Turn the 4-inch backlight off?",
-                     on_tap=lambda ctx: self._sat_send("backlight_off")),
-            MenuItem("BACKLIGHT ON",
-                     on_tap=lambda ctx: self._sat_send("backlight_on")),
+                     value_fn=lambda: "on" if config.sat_rotate() else "off",
+                     on_tap=lambda ctx: config.toggle_sat_rotate()),
         ]
 
     @staticmethod
@@ -481,7 +513,7 @@ class SettingsPage(TouchMenu):
 
     def _draw_header(self, draw, tail):
         gauges.tracked_text(draw, (self.MENU_X0 + 28) * SS,
-                            (self.CARD_Y0 + 13) * SS, "CONFIGURE > " + tail,
+                            (self.CARD_Y0 + 13) * SS, "MENU > " + tail,
                             font(20 * SS, "bold"), TEXT_DIM, tracking=2 * SS)
 
     @staticmethod

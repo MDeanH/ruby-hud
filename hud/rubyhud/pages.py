@@ -187,10 +187,10 @@ class GaugesPage(Page):
         spd = "--" if speed is None else "%d" % int(round(_disp_speed(float(speed))))
         try:
             draw.text((self.SPD_CX * SS, self.SPD_BASE * SS), spd,
-                      font=font(280 * SS, "thin"), fill=TEXT, anchor="ms")
+                      font=font(280 * SS, "bold"), fill=TEXT, anchor="ms")
         except Exception:
             gauges._centered_text(draw, self.SPD_CX * SS, (self.SPD_BASE - 90) * SS,
-                                  spd, font(280 * SS, "thin"), TEXT)
+                                  spd, font(280 * SS, "bold"), TEXT)
 
     def _gear(self, draw, snap):
         g = snap.gear or "-"
@@ -376,7 +376,7 @@ class VehiclePage(Page):
 
 
 # --------------------------------------------------------------------------- #
-# Page: raw CAN traffic (hidden — reached via CONFIGURE > CAN BUS)
+# Page: raw CAN traffic (hidden — reached via MENU > CAN BUS)
 # --------------------------------------------------------------------------- #
 class CanPage(Page):
     name = "CAN BUS"
@@ -1218,11 +1218,16 @@ class AIVisionPage(Page):
         w = self.PREV_W * SS
         h = self.PREV_H * SS
         if frame is None:
-            # Status is live but no decoded frame yet: dark viewport + hint.
+            # Status is live but no decoded frame. 'no_camera' is a settled
+            # state (no camera connected, or a wedged feed) -> say so plainly;
+            # any other state means we are still warming up.
             from PIL import ImageDraw
             d = ImageDraw.Draw(img)
             d.rectangle([x, y, x + w, y + h], fill=mix(BG, PANEL, 0.3))
-            gauges._centered_text(d, x + w // 2, y + h // 2, "WAITING FOR FRAME",
+            msg = ("NO CAMERA"
+                   if str((st or {}).get("state") or "") == "no_camera"
+                   else "WAITING FOR FRAME")
+            gauges._centered_text(d, x + w // 2, y + h // 2, msg,
                                   font(26 * SS, "bold"), TEXT_DIM)
             return
         try:
@@ -1269,13 +1274,14 @@ class AIVisionPage(Page):
     def _badge_for(state, mode, source):
         """Return (text, color) for the in-preview mode badge, or None.
 
-        Four visually-distinct degraded states (OFFLINE handled separately):
-          no_camera          -> amber "DEMO - NO CAMERA"
+        No-camera states are not a 'demo': the preview itself shows 'NO CAMERA'
+        (see _paste_preview / the baked nocam frame), so no badge. The remaining
+        degraded states keep a corner badge:
           stub mode          -> amber "DEMO - CPU STUB"
           pattern/video src  -> amber "DEMO" (synthetic input)
           ok + hailo + camera -> no badge (live)."""
-        if state == "no_camera":
-            return ("DEMO - NO CAMERA", WARN)
+        if state == "no_camera" or source == "nocam":
+            return None
         if mode and mode != "hailo":
             return ("DEMO - CPU STUB", WARN)
         if source in ("pattern", "video"):
@@ -1305,7 +1311,7 @@ class AIVisionPage(Page):
         chips.append(("HAILO %d %s" % (int(round(_disp_temp(htemp))),
                                        config.temp_label())
                       if htemp is not None else "HAILO --", TEXT_DIM))
-        chips.append((("LIVE" if live else (state or "?").upper()),
+        chips.append((("LIVE" if live else (state or "?").upper().replace("_", " ")),
                       OK if live else WARN))
 
         x = self.CHIP_X * SS
@@ -1382,58 +1388,83 @@ class AIVisionPage(Page):
 # Page: BODY — top-down line-art MX-5 with door / trunk / blind-spot status
 # --------------------------------------------------------------------------- #
 class BodyView(Page):
-    """Calm top-down body view in the Tesla language: a hairline MX-5 with open
-    panels (driver/passenger door, trunk) lit in red and a blind-spot arc on
-    any active side. Roof state shown as a small badge. No takeover, no spin."""
+    """Roof / doors / windows page: live roof + door + trunk status, plus on-page
+    ROOF and WINDOW controls. The controls are INERT placeholders for now -- the
+    MX-5 RF roof can't be actuated by a CAN inject (it needs a filtering CAN
+    bridge at the switch harness) and the windows are on LIN/physical switches,
+    so a tap shows 'pending' instead of transmitting. Wired live once the frames
+    are captured on the car (see memory: mx5-roof-window-can). (Was the
+    'ND1 MX-5 RF' body page.)"""
 
-    name = "BODY"
+    name = "ROOF/DOORS/WINDOWS"
 
-    # Square image placeholder (screen px) — a top-down car image goes here later.
-    SQ = (390, 158, 890, 658)
+    SQ = (40, 200, 470, 640)          # vehicle image placeholder (left)
+
+    # control button hit-boxes (screen px) -- shared by render + handle_tap
+    _BTN = {"roof_open":  (560, 248, 880, 332),
+            "roof_close": (904, 248, 1224, 332),
+            "win_up":     (560, 420, 880, 504),
+            "win_down":   (904, 420, 1224, 504)}
+    _LABELS = {"roof_open": "OPEN", "roof_close": "CLOSE",
+               "win_up": "UP", "win_down": "DOWN"}
+
+    def __init__(self):
+        self._flash = None            # (monotonic, msg) feedback on a disabled tap
 
     def render_static(self, draw, img):
-        gauges.tracked_text(draw, 40 * SS, 92 * SS, "ND1 MX-5 RF",
-                            font(14 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
-        # Square image frame: faint fill + hairline border. Will be populated
-        # with a vehicle image later; the centred glyph/label is the placeholder.
+        gauges.tracked_text(draw, 40 * SS, 82 * SS, "ROOF / DOORS / WINDOWS",
+                            font(25 * SS, "bold"), TEXT, tracking=3 * SS)
+        gauges.tracked_text(draw, 40 * SS, 120 * SS, "ND1 MX-5 RF",
+                            font(13 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
+        # vehicle image placeholder (left)
         x0, y0, x1, y1 = (v * SS for v in self.SQ)
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=20 * SS,
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=18 * SS,
                                fill=mix(theme.BG, TEXT, 0.04),
                                outline=mix(theme.BG, CARD_BORDER, 0.85),
                                width=max(1, SS))
         cx = (self.SQ[0] + self.SQ[2]) // 2
         cy = (self.SQ[1] + self.SQ[3]) // 2
-        hint = mix(theme.BG, TEXT_DIM, 0.4)
-        gw = 46
-        draw.rounded_rectangle([(cx - gw) * SS, (cy - gw * 0.7) * SS,
-                                (cx + gw) * SS, (cy + gw * 0.7) * SS],
-                               radius=8 * SS, outline=hint, width=max(1, SS))
-        draw.ellipse([(cx - gw * 0.55) * SS, (cy - gw * 0.42) * SS,
-                      (cx - gw * 0.18) * SS, (cy - gw * 0.05) * SS],
-                     outline=hint, width=max(1, SS))
-        draw.line([((cx - gw * 0.8) * SS, (cy + gw * 0.5) * SS),
-                   ((cx - gw * 0.1) * SS, (cy - gw * 0.05) * SS),
-                   ((cx + gw * 0.42) * SS, (cy + gw * 0.5) * SS)],
-                  fill=hint, width=max(1, SS), joint="curve")
-        gauges.tracked_text_center(draw, cx * SS, (cy + gw + 22) * SS,
-                                   "VEHICLE IMAGE",
-                                   font(15 * SS, "bold"), hint, tracking=4 * SS)
-
-    def render(self, draw, img, snap, ctx):
-        self._roof_badge(draw, snap)
-        self._caption(draw, snap)
+        gauges.tracked_text_center(draw, cx * SS, cy * SS, "VEHICLE",
+                                   font(15 * SS, "bold"),
+                                   mix(theme.BG, TEXT_DIM, 0.4), tracking=4 * SS)
+        # control sections + buttons (drawn dimmed = inert)
+        gauges.tracked_text(draw, 560 * SS, 218 * SS, "ROOF",
+                            font(16 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
+        gauges.tracked_text(draw, 560 * SS, 390 * SS, "WINDOWS",
+                            font(16 * SS, "regular"), TEXT_DIM, tracking=4 * SS)
+        for key, rect in self._BTN.items():
+            self._draw_btn(draw, rect, self._LABELS[key])
+        gauges.tracked_text(draw, 560 * SS, 524 * SS,
+                            "CONTROLS PENDING — needs on-car CAN/LIN capture",
+                            font(14 * SS, "regular"), mix(theme.BG, WARN, 0.65),
+                            tracking=2 * SS)
 
     @staticmethod
-    def _roof_badge(draw, snap):
+    def _draw_btn(draw, rect, label):
+        x0, y0, x1, y1 = (v * SS for v in rect)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=12 * SS,
+                               fill=mix(theme.BG, TEXT, 0.03),
+                               outline=mix(theme.BG, CARD_BORDER, 0.7),
+                               width=max(1, SS))
+        cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+        gauges._centered_text(draw, cx * SS, cy * SS, label,
+                              font(28 * SS, "bold"), mix(theme.BG, TEXT_DIM, 0.7))
+
+    def render(self, draw, img, snap, ctx):
+        # roof status (top-right)
         roof = snap.roof or "-"
-        col = OK if roof == "CLOSED" else (TEXT_DIM if roof == "-" else WARN)
-        gauges.tracked_text(draw, 1240 * SS, 90 * SS, "ROOF",
+        rcol = OK if roof == "CLOSED" else (TEXT_DIM if roof == "-" else WARN)
+        gauges.tracked_text(draw, 1224 * SS, 80 * SS, "ROOF",
                             font(13 * SS, "regular"), TEXT_DIM, tracking=4 * SS,
                             anchor="ra")
-        gauges.tracked_text(draw, 1240 * SS, 116 * SS,
+        gauges.tracked_text(draw, 1224 * SS, 106 * SS,
                             ("--" if roof == "-" else roof),
-                            font(20 * SS, "regular"), col, tracking=2 * SS,
+                            font(20 * SS, "regular"), rcol, tracking=2 * SS,
                             anchor="ra")
+        self._caption(draw, snap)
+        if self._flash and time.monotonic() - self._flash[0] < 2.5:
+            gauges.tracked_text_center(draw, SW // 2, 660 * SS, self._flash[1],
+                                       font(18 * SS, "bold"), WARN, tracking=2 * SS)
 
     @staticmethod
     def _caption(draw, snap):
@@ -1448,33 +1479,106 @@ class BodyView(Page):
             msg, col = "  ·  ".join(opens) + " open", DANGER
         else:
             msg, col = "ALL CLOSED", mix(theme.BG, TEXT_DIM, 0.3)
-        gauges.tracked_text_center(draw, SW // 2, 690 * SS, msg,
-                                   font(23 * SS, "regular"), col, tracking=3 * SS)
+        gauges.tracked_text_center(draw, SW // 2, 700 * SS, msg,
+                                   font(22 * SS, "regular"), col, tracking=3 * SS)
         if snap.bsm_left or snap.bsm_right:
             side = "Both sides" if (snap.bsm_left and snap.bsm_right) else (
                 "Left" if snap.bsm_left else "Right")
-            gauges.tracked_text_center(draw, SW // 2, 718 * SS,
+            gauges.tracked_text_center(draw, SW // 2, 724 * SS,
                                        "VEHICLE IN BLIND SPOT · " + side.upper(),
-                                       font(14 * SS, "bold"), DANGER,
-                                       tracking=2 * SS)
+                                       font(13 * SS, "bold"), DANGER, tracking=2 * SS)
+
+    def handle_tap(self, x, y, ctx):
+        # Inert for now: a tap on a control just flashes 'pending' (no CAN tx).
+        for key, (bx0, by0, bx1, by1) in self._BTN.items():
+            if bx0 <= x <= bx1 and by0 <= y <= by1:
+                self._flash = (time.monotonic(),
+                               "%s — PENDING (needs on-car CAN capture)"
+                               % self._LABELS[key])
+                return True
+        return False
 
 
 # --------------------------------------------------------------------------- #
 # factories
 # --------------------------------------------------------------------------- #
+class GpsPage(Page):
+    """GNSS readout from gpsd: fix status, satellites, ground speed, heading and
+    coordinates. Speed + position come from the USB GPS via gpsd, so this works
+    with no CAN bus connected (SPEED here is GPS ground speed)."""
+
+    name = "GPS"
+
+    def render_static(self, draw, img):
+        # NOTE: SW/SH are already supersampled (W*SS); use them directly.
+        gauges.tracked_text(draw, 52 * SS, 84 * SS, "GPS",
+                            font(28 * SS, "bold"), TEXT, tracking=4 * SS)
+        draw.line([(52 * SS, 134 * SS), (SW - 52 * SS, 134 * SS)],
+                  fill=mix(BG, CARD_BORDER, 0.6), width=SS)
+
+    def render(self, draw, img, snap, ctx):
+        from . import gps
+        st = gps.reader().snapshot()
+        online = bool(st.get("online"))
+        mode = int(st.get("mode") or 0)
+
+        # fix-status banner (SW is already SS-scaled -> SW//2 is the centre)
+        if not online:
+            label, col = "NO GPSD", DANGER
+        elif mode >= 3:
+            label, col = "3D FIX", OK
+        elif mode == 2:
+            label, col = "2D FIX", OK
+        else:
+            label, col = "ACQUIRING", WARN
+        gauges.tracked_text_center(draw, SW // 2, 200 * SS, label,
+                                   font(46 * SS, "bold"), col, tracking=4 * SS)
+
+        # readouts (GPS ground speed works even with no CAN)
+        spd = st.get("speed_mps")
+        if spd is None:
+            spd_val = "-- " + config.speed_label()
+        else:
+            spd_val = "%d %s" % (int(round(_disp_speed(spd * 2.2369363))),
+                                 config.speed_label())
+        trk, lat, lon = st.get("track"), st.get("lat"), st.get("lon")
+        rows = [
+            ("SPEED", spd_val),
+            ("SATELLITES", "%d / %d" % (int(st.get("sats_used") or 0),
+                                        int(st.get("sats_seen") or 0))),
+            ("HEADING", "--" if trk is None else "%03d°" % int(round(trk))),
+            ("LATITUDE", "--" if lat is None else "%.5f" % lat),
+            ("LONGITUDE", "--" if lon is None else "%.5f" % lon),
+        ]
+        y = 310
+        lf, vf = font(22 * SS, "regular"), font(34 * SS, "regular")
+        has_fix = mode >= 2
+        for lab, val in rows:
+            gauges.tracked_text(draw, 150 * SS, (y + 8) * SS, lab, lf, TEXT_DIM,
+                                tracking=3 * SS)
+            vcol = TEXT if (has_fix or lab == "SATELLITES") else TEXT_DIM
+            draw.text((SW - 150 * SS, y * SS), val, font=vf, fill=vcol,
+                      anchor="ra")
+            draw.line([(150 * SS, (y + 58) * SS), (SW - 150 * SS, (y + 58) * SS)],
+                      fill=mix(BG, CARD_BORDER, 0.4), width=SS)
+            y += 74
+
+
 def make_pages() -> list:
     from .settings import SettingsPage  # function-level: no import cycle
-    # Visible swipe rotation: GAUGES, VEHICLE, BODY, SYSTEM, CONFIGURE[, AI].
+    # Visible swipe rotation: GAUGES, VEHICLE, ROOF/DOORS/WINDOWS, SYSTEM, GPS,
+    # MENU[, AI]. The AI page is present only when AI vision is enabled (off on
+    # the Pi-4 windshield unit, which has no Hailo) and it constructs.
     pages = [GaugesPage(), VehiclePage(), BodyView(), SystemPage(),
-             SettingsPage()]
-    # Vision page appended to the visible rotation if it constructs.
-    try:
-        vision = AIVisionPage()
-    except Exception:
-        vision = None
-    if vision is not None:
-        pages.append(vision)
-    # Hidden pages: not in the swipe rotation, reached via CONFIGURE deep-links
+             GpsPage(), SettingsPage()]
+    if config.ai_vision():
+        try:
+            vision = AIVisionPage()
+        except Exception:
+            vision = None
+        if vision is not None:
+            pages.append(vision)
+    # Hidden pages: not in the swipe rotation, reached via MENU deep-links
     # (ctx['nav_request']). CanPage + PlaybackPage are diagnostic / on-demand.
     pages.append(CanPage())
     try:

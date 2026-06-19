@@ -12,7 +12,7 @@
 #                      zero network required
 #   auto-rollback      OnFailure= hook: revert a pending update, else restart
 #   adopt <tag>        one-time migration: /home/michael/hud dir -> symlink
-#   restart-hud | switch-dash | switch-hud
+#   restart-hud | switch-dash | switch-hud | reboot
 #
 # Every phase appends a JSON line to /run/ruby-update/status.jsonl and
 # atomically rewrites /run/ruby-update/status.json. All verbs run under a
@@ -562,6 +562,14 @@ do_switch_dash() {
     set_status done "rubydash active" true
 }
 
+do_reboot() {
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status rebooting "systemctl reboot" true
+    # No 'done' status: the box goes down. On next boot the HUD comes back and
+    # satdriver/rubyvision restart via their enabled units.
+    systemctl reboot || { fail "reboot failed"; return 1; }
+}
+
 do_switch_hud() {
     CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
     set_status switching "starting rubyhud (Conflicts stops rubydash)" true
@@ -598,6 +606,7 @@ do_consume() {  # drain the queue, oldest first; delete BEFORE executing
                 restart-hud)  do_restart_hud ;;
                 switch-dash)  do_switch_dash ;;
                 switch-hud)   do_switch_hud ;;
+                reboot)       do_reboot ;;
                 '')           set_status error "unreadable request; skipped" false ;;
                 *)            set_status error "unknown cmd '$cmd'; skipped" false ;;
             esac
@@ -615,7 +624,7 @@ do_consume() {  # drain the queue, oldest first; delete BEFORE executing
 
 VERB=${1:-}
 ARG=${2:-}
-USAGE='--consume|check|apply [ref]|rollback [ref]|auto-rollback|adopt <tag>|restart-hud|switch-dash|switch-hud'
+USAGE='--consume|check|apply [ref]|rollback [ref]|auto-rollback|adopt <tag>|restart-hud|switch-dash|switch-hud|reboot'
 
 if [ -z "$VERB" ]; then
     printf '{"ts":%s,"phase":"error","msg":"usage: ruby-updated %s","ok":false}\n' \
@@ -661,6 +670,7 @@ case "$VERB" in
     restart-hud)   do_restart_hud;        exit $? ;;
     switch-dash)   do_switch_dash;        exit $? ;;
     switch-hud)    do_switch_hud;         exit $? ;;
+    reboot)        do_reboot;             exit $? ;;
     *)
         printf '{"ts":%s,"phase":"error","msg":"unknown verb %s; usage: ruby-updated %s","ok":false}\n' \
             "$(date +%s)" "$(json_escape "$VERB")" "$USAGE"

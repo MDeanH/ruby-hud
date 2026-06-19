@@ -184,7 +184,7 @@ def _page_glyph(draw, name, cx, cy, r, col, S):
             wr = r * 0.20
             draw.ellipse([wx - wr, cy + r * 0.34 - wr, wx + wr,
                           cy + r * 0.34 + wr], outline=col, width=w)
-    elif n == "BODY":                                  # top-down car
+    elif n == "ROOF/DOORS/WINDOWS":                    # top-down car
         draw.rounded_rectangle([cx - r * 0.52, cy - r, cx + r * 0.52, cy + r],
                                radius=int(r * 0.5), outline=col, width=w)
         draw.line([(cx - r * 0.52, cy - r * 0.12),
@@ -200,7 +200,14 @@ def _page_glyph(draw, name, cx, cy, r, col, S):
                       fill=col, width=w)
             draw.line([(cx + k * s, cy + s), (cx + k * s, cy + r)],
                       fill=col, width=w)
-    elif n == "CONFIGURE":                             # gear
+    elif n == "GPS":                                   # location crosshair
+        rr = r * 0.66
+        draw.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=col, width=w)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            draw.line([(cx + dx * rr * 0.62, cy + dy * rr * 0.62),
+                       (cx + dx * r, cy + dy * r)], fill=col, width=w)
+        draw.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=col)
+    elif n == "MENU":                                  # gear
         for k in range(8):
             a = math.radians(k * 45)
             draw.line([(cx + r * 0.72 * math.cos(a), cy + r * 0.72 * math.sin(a)),
@@ -229,7 +236,7 @@ def _page_glyph(draw, name, cx, cy, r, col, S):
 def _draw_nav_static(draw, img, pages, idx):
     """Page dots + name (static per page) and subtle edge chevrons. Dots track
     only the VISIBLE swipe rotation; a hidden page (CAN / PLAYBACK, reached via
-    a CONFIGURE deep-link) shows a back hint instead of dots/chevrons."""
+    a MENU deep-link) shows a back hint instead of dots/chevrons."""
     sw = img.width
     cur = pages[idx] if 0 <= idx < len(pages) else None
     if cur is None:

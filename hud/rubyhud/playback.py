@@ -1,6 +1,6 @@
 """PLAYBACK page: review recorded screen/camera clips on the HUD.
 
-Hidden page, reached via CONFIGURE > RECORDING > PLAYBACK. Lists the MP4s in
+Hidden page, reached via MENU > CAMERA & AI > RECORDING > PLAYBACK. Lists the MP4s in
 ~/recordings newest-first; tap one to play. Decoding is cv2.VideoCapture (the
 Pi 5 has hardware H.264 *decode*); one frame is pulled per render call, paced to
 the clip's fps, and blitted (letterboxed) into the page body. tap = pause/resume,
@@ -123,7 +123,7 @@ class PlaybackPage:
             gauges._centered_text(draw, SW // 2, SH // 2, "NO RECORDINGS",
                                   font(32 * SS, "bold"), TEXT_DIM)
             gauges._centered_text(draw, SW // 2, SH // 2 + 46 * SS,
-                                  "record from CONFIGURE > RECORDING",
+                                  "record from MENU > CAMERA & AI > RECORDING",
                                   font(20 * SS, "regular"), TEXT_DIM)
             return
         x0, x1 = self.AREA_X0 * SS, self.AREA_X1 * SS
@@ -219,7 +219,7 @@ class PlaybackPage:
             self._mode = "list"
             self._files = recorder.list_recordings()
             return True       # consumed: stay on page, back to the list
-        return False          # list: let the loop pop back to CONFIGURE
+        return False          # list: let the loop pop back to MENU
 
     def handle_swipe_v(self, direction, ctx):
         return False

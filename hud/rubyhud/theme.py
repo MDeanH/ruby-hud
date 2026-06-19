@@ -9,7 +9,7 @@ fallbacks (macOS build-host faces, then PIL's default) and never raise.
 from PIL import ImageFont
 
 # --- Palette (RGB) ---------------------------------------------------------
-# Colors are organized as named *schemes* so a future CONFIGURE picker can
+# Colors are organized as named *schemes* so a future MENU picker can
 # offer alternates. "soul-red" is the default, bound to Michael's "Mazda HUD"
 # mockup (Downloads/Mazda HUD (standalone).html): bg #07090c, ring track
 # #2a3340, bright track #4a5666, accent #d0273b, dim text #8d99a7.

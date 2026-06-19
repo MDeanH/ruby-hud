@@ -244,10 +244,13 @@ class Pipeline:
 
     # --- badge logic -------------------------------------------------------
     def _badge(self, kind: str, state: str):
-        """DEMO badge text or None. Real detection only when running Hailo on a
-        live camera (csi/usb)."""
-        if state == "no_camera":
-            return "DEMO - NO CAMERA"
+        """Badge text or None. Real detection only when running Hailo on a
+        live camera (csi/usb/ir)."""
+        # No camera: honest label, NO 'DEMO' (the demo feed is gone -- nocam is
+        # a static 'NO CAMERA' frame). Covers both the placeholder source and a
+        # real camera that died (frames stopped -> state 'no_camera').
+        if state == "no_camera" or kind == "nocam":
+            return "NO CAMERA"
         # ir = RealSense IR, a real camera (mono). Treat it as live alongside
         # csi/usb so its feed isn't mislabelled DEMO.
         is_live_cam = kind.startswith(("csi", "usb", "ir"))

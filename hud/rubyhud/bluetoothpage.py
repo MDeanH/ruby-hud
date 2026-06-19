@@ -1,6 +1,6 @@
 """BLUETOOTH page: scan, pair (just-works), connect, disconnect, forget.
 
-Hidden page (name "BLUETOOTH"), reached via CONFIGURE > BLUETOOTH > MANAGE / PAIR
+Hidden page (name "BLUETOOTH"), reached via MENU > BLUETOOTH > MANAGE / PAIR
 (ctx['nav_request'] = "BLUETOOTH"). All bluetoothctl work goes through btnet,
 which runs every slow op on a background thread -- this page only reads caches
 and draws, so the 15 fps loop never stalls. v1 pairing is just-works/SSP (no PIN

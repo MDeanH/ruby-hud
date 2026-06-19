@@ -208,11 +208,20 @@ class TouchMenu(Page):
         self._draw_rows(draw)
         if self._max_scroll() > 0:
             self._draw_scrollbar(draw)
-        # Footer hint is dynamic so progress/result panels do not show it.
-        gauges.tracked_text_center(
-            draw, ((self.MENU_X0 + self.MENU_X1) // 2) * SS, 694 * SS,
-            "HOLD = BACK   SWIPE = SCROLL", font(14 * SS, "bold"),
-            mix(BG, TEXT_DIM, 0.6), tracking=2 * SS)
+        # Footer hint is dynamic so progress/result panels do not show it, and
+        # only names gestures that actually do something here: BACK only when
+        # there's a stack to pop, SCROLL only when the screen overflows. Menus
+        # are now sized to fit, so at the root this footer is simply absent.
+        parts = []
+        if len(self.stack) > 1:
+            parts.append("HOLD = BACK")
+        if self._max_scroll() > 0:
+            parts.append("SWIPE = SCROLL")
+        if parts:
+            gauges.tracked_text_center(
+                draw, ((self.MENU_X0 + self.MENU_X1) // 2) * SS, 694 * SS,
+                "   ".join(parts), font(14 * SS, "bold"),
+                mix(BG, TEXT_DIM, 0.6), tracking=2 * SS)
         if self._modal_live():
             self._draw_modal(draw, img)
 

@@ -1,6 +1,6 @@
 """WI-FI page: scan, connect (on-screen WPA password), manage saved networks.
 
-Hidden page (name "WIFI"), reached via CONFIGURE > WI-FI > MANAGE / CONNECT
+Hidden page (name "WIFI"), reached via MENU > WI-FI > MANAGE / CONNECT
 (ctx['nav_request'] = "WIFI"). All NetworkManager work goes through wifinet,
 which runs every slow op on a background thread -- this page only reads caches
 and draws, so the 15 fps loop never stalls. Password entry uses the shared

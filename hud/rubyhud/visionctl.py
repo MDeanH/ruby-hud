@@ -1,6 +1,6 @@
 """Control the rubyvision systemd service from the HUD.
 
-Shared by the AI VISION page (on-page power button) and CONFIGURE > AI VISION.
+Shared by the AI VISION page (on-page power button) and MENU > AI VISION.
 Status (`systemctl is-active`) is TTL-cached so per-frame value_fns / render
 calls never shell out every frame; start/stop is fire-and-forget via the scoped
 sudoers rule (deploy/sudoers.d/rubyhud-vision) so the render thread never blocks
@@ -45,6 +45,19 @@ def set_active(on: bool) -> None:
 
 def toggle() -> None:
     set_active(not is_active())
+
+
+def restart() -> None:
+    """Restart rubyvision so it re-detects + re-opens the camera (for swapping
+    cameras on the bench / recovering a wedged camera). Fire-and-forget via the
+    scoped sudoers rule; the render thread never blocks. Never raises."""
+    try:
+        subprocess.Popen(
+            ["sudo", "-n", "/usr/bin/systemctl", "restart", "rubyvision"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    _status["t"] = 0.0   # force a fresh status read on the next frame
 
 
 def status_label() -> str:

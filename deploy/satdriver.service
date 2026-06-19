@@ -1,0 +1,27 @@
+[Unit]
+Description=Ruby 4" HUD thin-client streamer (Pi renders satframe -> JPEG over USB)
+After=network.target
+# Never enter the systemd start-rate-limiter: this service may legitimately
+# crash-loop while can0 / the Qualia USB-CDC port are coming up, and
+# Restart=always must keep retrying. StartLimitIntervalSec is a [Unit] directive.
+StartLimitIntervalSec=0
+
+[Service]
+User=michael
+Group=michael
+# Replaces rubysat.service for the 4" panel. The Qualia is now flashed with the
+# thin-client (JPEG-blit) firmware (qualia/satdisplay), so the Pi renders both
+# screens from one Pillow codebase (rubyhud.satframe) and streams the 4" frame
+# here over USB-serial. rubyhud is importable via the same editable/.pth
+# mechanism rubysat used (re-pinned per OTA apply by deploy/setup-sat.sh), so no
+# PYTHONPATH is needed -- `-m rubyhud.satdriver` resolves against the active
+# release, and config.py's cross-process reload carries the 7"-set shift
+# threshold into this process.
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/michael/ruby-env/bin/python -m rubyhud.satdriver --channel can0 --port /dev/ttyACM0 --fps 12
+Restart=always
+RestartSec=2
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

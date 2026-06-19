@@ -150,6 +150,49 @@ class PatternSource:
         pass
 
 
+# --------------------------------------------------------------------------- #
+class NoCameraSource:
+    """Static 'NO CAMERA' frame -- the last-resort producer when no real camera
+    opens. Replaces the old animated demo PATTERN so a missing camera reads
+    honestly instead of as a (fake) live feed: truth=[] means the stub detector
+    draws nothing, and the pipeline badges it 'NO CAMERA' (not DEMO).
+    """
+
+    def __init__(self, fps: float = 4.0):
+        self.name = "nocam"
+        self.truth: list = []          # no ground truth -> stub draws no boxes
+        self._fps = max(1.0, float(fps))
+        self._period = 1.0 / self._fps
+        self._next_t = 0.0
+        self._frame = self._make_frame()
+
+    @staticmethod
+    def _make_frame() -> np.ndarray:
+        img = np.zeros((CAP_H, CAP_W, 3), dtype=np.uint8)   # pure black
+        txt = "NO CAMERA"
+        px = 12                                             # block-font scale
+        tw, th = len(txt) * 6 * px, 7 * px
+        _blit_blocks(img, (CAP_W - tw) // 2, (CAP_H - th) // 2, txt,
+                     (120, 132, 148), px=px)
+        return img
+
+    def read(self):
+        # Paced like PatternSource so a tight consumer loop does not spin; the
+        # frame itself never changes.
+        now = time.monotonic()
+        if self._next_t == 0.0:
+            self._next_t = now
+        if now < self._next_t:
+            return None
+        self._next_t += self._period
+        if self._next_t < now:
+            self._next_t = now + self._period
+        return self._frame
+
+    def close(self):
+        pass
+
+
 # Tiny 5x7 block-font renderer (numpy) so PatternSource needs no PIL/font.
 _GLYPHS = {
     " ": ["00000"] * 7,
@@ -403,9 +446,9 @@ class VideoSource:
 # At startup open_source('auto') walks this order and locks onto the FIRST real
 # camera that actually yields frames: the RealSense D410 IR first (the chosen
 # cam), then any USB webcam, then the CSI -- so if the (finicky) RealSense IR
-# isn't there or wedges, it uses another connected camera instead of falling to
-# the demo. PatternSource is only the absolute last resort if NO camera opens.
-# The demo 'video'/'pattern' feeds stay out of the cycle.
+# isn't there or wedges, it uses another connected camera. If NO camera opens
+# the last resort is a static 'NO CAMERA' frame (NoCameraSource), not a demo.
+# The 'video'/'pattern' feeds stay out of the cycle (explicit selection only).
 SOURCE_CYCLE = ("ir", "usb", "csi")
 
 
@@ -535,9 +578,9 @@ def _open_one(kind: str, model_dir: str):
 def open_source(pref: str = "auto", model_dir: str = ""):
     """Open a source. Returns (source, kind).
 
-    pref="auto" walks SOURCE_CYCLE (currently just the RealSense IR camera),
-    each guarded; the absolute last-resort is PatternSource so the pipeline
-    always has a frame producer. A specific kind tries that kind first.
+    pref="auto" walks SOURCE_CYCLE (RealSense IR, then USB, then CSI), each
+    guarded; if none open the last-resort is a static 'NO CAMERA' frame
+    (NoCameraSource) -- never a demo feed. A specific kind tries that kind first.
     """
     pref = (pref or "auto").lower()
     if pref == "auto":
@@ -557,6 +600,7 @@ def open_source(pref: str = "auto", model_dir: str = ""):
         except Exception as exc:  # be defensive: never let one source kill us
             last_err = exc
             continue
-    # Absolute fallback (should be unreachable: pattern never fails).
-    src = PatternSource()
-    return src, "pattern"
+    # No real camera opened. Show an honest static 'NO CAMERA' frame -- NOT the
+    # old animated demo pattern. truth=[] so no fake detections are drawn.
+    src = NoCameraSource()
+    return src, "nocam"
