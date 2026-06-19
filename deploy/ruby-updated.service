@@ -1,5 +1,5 @@
 [Unit]
-Description=Privileged ruby HUD updater (queue consumer)
+Description=Privileged Ruby updater (queue consumer)
 
 [Service]
 Type=oneshot

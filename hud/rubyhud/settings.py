@@ -6,7 +6,7 @@ git or systemd. While an apply/rollback is in flight the row list is
 replaced by a progress panel (big phase name + spinner + the last
 status.jsonl lines) and a terminal phase shows a result banner for 5
 minutes. __init__ re-enters progress/result from status.json, so the page
-survives the HUD restart that happens in the middle of every update.
+survives the dash restart that happens in the middle of every update.
 
 Mode detection: apply/rollback statuses carry "target"; check statuses do
 not, so a plain version check never hijacks the screen.
@@ -81,7 +81,7 @@ class SettingsPage(TouchMenu):
         self._flow_wall = None    # wall time of our apply/rollback request
         self._result_seen = None  # status ts of a dismissed result banner
         self._req_err = None      # monotime a request() returned False (banner)
-        # Re-enter progress/result across a mid-update HUD restart, but only
+        # Re-enter progress/result across a mid-update dash restart, but only
         # for a *recent* status: a stale non-terminal status.json (e.g. an
         # updater killed mid-apply, leaving "deps" in /run until reboot) must
         # not lock the page into the progress panel forever.
@@ -377,10 +377,10 @@ class SettingsPage(TouchMenu):
 
     def _service_items(self) -> list:
         return [
-            MenuItem("RESTART HUD", confirm="Restart the HUD now?",
+            MenuItem("RESTART DASH", confirm="Restart the dash now?",
                      on_tap=lambda ctx: self._req("restart-hud")),
             MenuItem("CONSOLE DASH", danger=True,
-                     confirm="Switch to the console dash? The HUD stops.",
+                     confirm="Switch to the console dash? The dash stops.",
                      on_tap=lambda ctx: self._req("switch-dash")),
         ]
 
@@ -435,7 +435,7 @@ class SettingsPage(TouchMenu):
 
     def _confirm_apply(self):
         st = updates.status() or {}
-        return ("Install %s? HUD will restart."
+        return ("Install %s? Dash will restart."
                 % (st.get("available") or "latest"))
 
     def _do_apply(self, ctx):
@@ -448,7 +448,7 @@ class SettingsPage(TouchMenu):
         return updates.previous_version() or "--"
 
     def _confirm_rollback(self):
-        return ("Roll back to %s? HUD will restart."
+        return ("Roll back to %s? Dash will restart."
                 % (updates.previous_version() or "previous"))
 
     def _do_rollback(self, ctx):

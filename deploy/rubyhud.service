@@ -1,5 +1,5 @@
 [Unit]
-Description=Ruby graphical HUD
+Description=Ruby graphical dash (7" touchscreen)
 Conflicts=getty@tty1.service rubydash.service
 After=systemd-user-sessions.service
 ConditionPathExists=/home/michael/hud/rubyhud/__main__.py
