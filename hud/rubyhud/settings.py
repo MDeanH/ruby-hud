@@ -165,7 +165,7 @@ class SettingsPage(TouchMenu):
             # phone stops mirroring; audio -> 3.5mm jack. CarPlay (a dongle) is
             # still a planned placeholder below.
             MenuItem("SCREEN MIRROR", value_fn=lambda: "AirPlay",
-                     confirm="Start AirPlay screen mirror? The dash pauses.",
+                     confirm="Start AirPlay mirror? Press and hold the screen to return.",
                      on_tap=lambda ctx: self._req("mirror")),
             # Honest 'planned' placeholders (dimmed) until each is built out.
             MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
