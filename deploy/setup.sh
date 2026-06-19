@@ -8,7 +8,9 @@ set -u
 VENV=/home/michael/ruby-env
 PIP=$VENV/bin/pip
 FONT_DST=/usr/share/fonts/truetype/rubyhud
-APT_PKGS=(python3-evdev fonts-dejavu-core fbcat)
+# uxplay + gstreamer1.0-alsa: AirPlay screen mirror (SCREEN MIRROR menu item).
+# uxplay pulls the gstreamer plugins it needs; alsasink (jack audio) is separate.
+APT_PKGS=(python3-evdev fonts-dejavu-core fbcat uxplay gstreamer1.0-alsa)
 PIP_PKGS=(pillow numpy python-can)
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 

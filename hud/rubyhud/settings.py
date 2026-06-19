@@ -161,6 +161,12 @@ class SettingsPage(TouchMenu):
             MenuItem("WI-FI", submenu=self._wifi_items),
             MenuItem("BLUETOOTH", value_fn=self._bt_value,
                      submenu=self._bt_items),
+            # AirPlay screen mirror: takes over the 7" (stops the dash) until the
+            # phone stops mirroring; audio -> 3.5mm jack. CarPlay (a dongle) is
+            # still a planned placeholder below.
+            MenuItem("SCREEN MIRROR", value_fn=lambda: "AirPlay",
+                     confirm="Start AirPlay screen mirror? The dash pauses.",
+                     on_tap=lambda ctx: self._req("mirror")),
             # Honest 'planned' placeholders (dimmed) until each is built out.
             MenuItem("PHONE CONNECTION", value_fn=lambda: "planned",
                      enabled_fn=lambda: False),

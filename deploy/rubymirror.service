@@ -1,0 +1,18 @@
+[Unit]
+Description=Ruby AirPlay screen mirror (UxPlay -> 7" dash)
+# Mutually exclusive with the dash/console: starting this stops rubyhud, and
+# starting rubyhud (the 'switch-hud' auto-return) stops this.
+Conflicts=getty@tty1.service rubydash.service rubyhud.service
+After=systemd-user-sessions.service avahi-daemon.service
+
+[Service]
+# Root: kmssink needs DRM master, which a non-root console process can't take.
+# No controlling tty -- uxplay quits immediately on a tty stdin EOF/hangup, so
+# the controller (rubyhud.mirror) gives it stdin=/dev/null.
+ExecStart=/home/michael/ruby-env/bin/python -m rubyhud.mirror
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+Restart=no
+# Started on demand via 'ruby-updated mirror' (the SCREEN MIRROR menu item);
+# never enabled, so it does not start at boot.

@@ -12,7 +12,7 @@
 #                      zero network required
 #   auto-rollback      OnFailure= hook: revert a pending update, else restart
 #   adopt <tag>        one-time migration: /home/michael/hud dir -> symlink
-#   restart-hud | switch-dash | switch-hud | reboot
+#   restart-hud | switch-dash | switch-hud | mirror | reboot
 #
 # Every phase appends a JSON line to /run/ruby-update/status.jsonl and
 # atomically rewrites /run/ruby-update/status.json. All verbs run under a
@@ -239,6 +239,7 @@ self_install() {  # <release-dir>: refresh handler + unit files from release
     sync_file "$d/rubyhud.service" /etc/systemd/system/rubyhud.service 0644 && changed=1
     sync_file "$d/can0.service" /etc/systemd/system/can0.service 0644 && changed=1
     sync_file "$d/ruby-capture.service" /etc/systemd/system/ruby-capture.service 0644 && changed=1
+    sync_file "$d/rubymirror.service" /etc/systemd/system/rubymirror.service 0644 && changed=1
     if sync_file "$d/rubyvision.service" /etc/systemd/system/rubyvision.service 0644; then
         changed=1
         # Enable on first install / whenever the unit changes (idempotent).
@@ -577,6 +578,15 @@ do_switch_hud() {
     set_status done "rubyhud active" true
 }
 
+do_mirror() {
+    # AirPlay screen mirror: starting rubymirror stops rubyhud (Conflicts); the
+    # mirror controller queues 'switch-hud' to return to the dash when done.
+    CURRENT=$(get_current); AVAILABLE=""; TARGET=""; ERROR=""
+    set_status switching "starting rubymirror (Conflicts stops rubyhud)" true
+    systemctl start rubymirror || { fail "start rubymirror failed"; return 1; }
+    set_status done "rubymirror active" true
+}
+
 do_consume() {  # drain the queue, oldest first; delete BEFORE executing
     # Iterate a glob (exact paths, any bytes) -- never parse `ls` output: a
     # filename with an embedded newline used to make `ls | head -n1` return a
@@ -606,6 +616,7 @@ do_consume() {  # drain the queue, oldest first; delete BEFORE executing
                 restart-hud)  do_restart_hud ;;
                 switch-dash)  do_switch_dash ;;
                 switch-hud)   do_switch_hud ;;
+                mirror)       do_mirror ;;
                 reboot)       do_reboot ;;
                 '')           set_status error "unreadable request; skipped" false ;;
                 *)            set_status error "unknown cmd '$cmd'; skipped" false ;;
@@ -624,7 +635,7 @@ do_consume() {  # drain the queue, oldest first; delete BEFORE executing
 
 VERB=${1:-}
 ARG=${2:-}
-USAGE='--consume|check|apply [ref]|rollback [ref]|auto-rollback|adopt <tag>|restart-hud|switch-dash|switch-hud|reboot'
+USAGE='--consume|check|apply [ref]|rollback [ref]|auto-rollback|adopt <tag>|restart-hud|switch-dash|switch-hud|mirror|reboot'
 
 if [ -z "$VERB" ]; then
     printf '{"ts":%s,"phase":"error","msg":"usage: ruby-updated %s","ok":false}\n' \
@@ -670,6 +681,7 @@ case "$VERB" in
     restart-hud)   do_restart_hud;        exit $? ;;
     switch-dash)   do_switch_dash;        exit $? ;;
     switch-hud)    do_switch_hud;         exit $? ;;
+    mirror)        do_mirror;             exit $? ;;
     reboot)        do_reboot;             exit $? ;;
     *)
         printf '{"ts":%s,"phase":"error","msg":"unknown verb %s; usage: ruby-updated %s","ok":false}\n' \
