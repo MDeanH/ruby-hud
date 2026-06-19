@@ -25,6 +25,20 @@ def _log(msg):
     sys.stderr.flush()
 
 
+def _open_serial(port, baud):
+    """Open the USB-serial port, waiting (not crashing) for it to appear. The
+    Qualia's ESP32-S3 CDC port can drop off the bus (USB wedge / replug); under
+    systemd a hard open on a missing port crash-loops, so block until it's back
+    and let the service stay 'active' meanwhile."""
+    import serial
+    while True:
+        try:
+            return serial.Serial(port, baud, timeout=0.05, write_timeout=2.0)
+        except (serial.SerialException, OSError) as exc:
+            _log("waiting for %s (%s)" % (port, exc))
+            time.sleep(2.0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="/dev/ttyACM0")
@@ -57,7 +71,7 @@ def main():
             dl.start()
             snap_fn = dl.snapshot
 
-    ser = serial.Serial(args.port, args.baud, timeout=0.05, write_timeout=2.0)
+    ser = _open_serial(args.port, args.baud)
     _log("request-driven stream -> %s (cap %.0f fps)" % (args.port, args.fps))
     min_period = 1.0 / max(1.0, args.fps)
     rxbuf = bytearray()
@@ -85,10 +99,9 @@ def main():
             time.sleep(0.5)
             try:
                 state["ser"].close()
-                state["ser"] = serial.Serial(args.port, args.baud,
-                                             timeout=0.05, write_timeout=2.0)
             except Exception:
                 pass
+            state["ser"] = _open_serial(args.port, args.baud)
             continue
         if chunk:
             rxbuf.extend(chunk)
