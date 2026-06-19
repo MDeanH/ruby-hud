@@ -67,7 +67,9 @@ class FrameBuffer:
         if img.mode != "RGB":
             img = img.convert("RGB")
         if img.size != (self.width, self.height):
-            img = img.resize((self.width, self.height), Image.LANCZOS)
+            # Small non-integer downscale (e.g. 1280x800 -> 1024x600 panel):
+            # BILINEAR is plenty here and far cheaper than LANCZOS in the hot path.
+            img = img.resize((self.width, self.height), Image.BILINEAR)
         arr = np.asarray(img, dtype=np.uint8)  # (H, W, 3) RGB
 
         if self.bpp == 16:

@@ -123,7 +123,7 @@ def _render_gauges(snap) -> Image.Image:
     gauges._centered_text(draw, CX, CY + 126 * SS, rt + "  RPM",
                           font(17 * SS, "regular"), mix(BG_SAT, TEXT_DIM, 0.7))
 
-    return img.resize((SAT, SAT), Image.LANCZOS)
+    return img.resize((SAT, SAT), Image.BOX)   # exact 2x: BOX == supersample resolve
 
 
 def _render_shift(snap) -> Image.Image:
@@ -140,7 +140,7 @@ def _render_shift(snap) -> Image.Image:
     s = "--" if spd is None else "%d" % int(round(config.mph_to_disp(float(spd))))
     draw.text((CX, CY + 96 * SS), s, font=font(240 * SS, "bold"),
               fill=ink, anchor="mm")
-    return img.resize((SAT, SAT), Image.LANCZOS)
+    return img.resize((SAT, SAT), Image.BOX)   # exact 2x: BOX == supersample resolve
 
 
 def jpeg(snap, quality: int = 72) -> bytes:
