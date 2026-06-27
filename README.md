@@ -82,7 +82,3 @@ The top-level README previously undersold scope (only hud/vision/deploy); this v
 - Defensive coding everywhere so the dash does not white-screen at 70 mph.
 
 This is embedded-systems discipline applied to a hobby car, not a web app ported to a Pi.
-
----
-
-*Happy to go deeper on OTA, CAN decode, vision pipeline, or the Qualia protocol.*
